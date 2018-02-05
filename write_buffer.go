@@ -21,6 +21,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 
+	"github.com/mcuadros/pgwire/datum"
 	"github.com/mcuadros/pgwire/pgwirebase"
 )
 
@@ -113,7 +114,7 @@ func (b *writeBuffer) writeLengthPrefixedString(s string) {
 
 // writeLengthPrefixedDatum writes a length-prefixed Datum in its
 // string representation. The length is encoded as an int32.
-func (b *writeBuffer) writeLengthPrefixedDatum(d tree.Datum) {
+func (b *writeBuffer) writeLengthPrefixedDatum(d datum.Datum) {
 	fmtCtx := tree.MakeFmtCtx(&b.variablePutbuf, tree.FmtSimple)
 	fmtCtx.FormatNode(d)
 	b.writeLengthPrefixedVariablePutbuf()

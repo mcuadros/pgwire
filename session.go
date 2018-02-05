@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/types"
+	"github.com/mcuadros/pgwire/datum"
+	"github.com/mcuadros/pgwire/types"
 )
 
 type Session interface {
@@ -65,7 +66,7 @@ type executor struct{}
 
 func (e *executor) ExecuteStatements(s Session, stmts string) error {
 	fmt.Println("QUERY", stmts)
-	sss := tree.DString("foo")
+	sss := datum.DString("foo")
 	group := s.ResultsWriter().NewResultsGroup()
 
 	defer group.Close()
@@ -74,7 +75,7 @@ func (e *executor) ExecuteStatements(s Session, stmts string) error {
 	sr.SetColumns(ResultColumns{{Name: "test", Typ: types.String}})
 
 	for i := 0; i < 10; i++ {
-		if err := sr.AddRow(s.Ctx(), []tree.Datum{
+		if err := sr.AddRow(s.Ctx(), []datum.Datum{
 			&sss,
 		}); err != nil {
 			panic(err)

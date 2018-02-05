@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/mcuadros/pgwire/datum"
 )
 
 // ResultsWriter is the interface used to by the Executor to produce results for
@@ -125,7 +126,7 @@ type StatementResult interface {
 	// StatementType is tree.Rows.
 	SetColumns(columns ResultColumns)
 	// AddRow takes the passed in row and adds it to the current result.
-	AddRow(ctx context.Context, row tree.Datums) error
+	AddRow(ctx context.Context, row datum.Datums) error
 	// IncrementRowsAffected increments a counter by n. This is used for all
 	// result types other than tree.Rows.
 	IncrementRowsAffected(n int)

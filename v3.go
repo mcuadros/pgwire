@@ -30,6 +30,7 @@ import (
 	"bytes"
 	"io"
 
+	"github.com/mcuadros/pgwire/datum"
 	"github.com/mcuadros/pgwire/pgerror"
 	"github.com/mcuadros/pgwire/pgwirebase"
 
@@ -859,7 +860,7 @@ func (c *v3Conn) IncrementRowsAffected(n int) {
 }
 
 // AddRow implements the StatementResult interface.
-func (c *v3Conn) AddRow(ctx context.Context, row tree.Datums) error {
+func (c *v3Conn) AddRow(ctx context.Context, row datum.Datums) error {
 	state := &c.streamingState
 	if state.err != nil {
 		return state.err
