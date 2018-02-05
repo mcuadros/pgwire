@@ -17,21 +17,13 @@ package pgwire
 import (
 	"context"
 	"crypto/tls"
-	"io"
 	"net"
+	"sync"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgwirebase"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/util/contextutil"
-	"github.com/cockroachdb/cockroach/pkg/util/envutil"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metric"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/pkg/errors"
 )
 
@@ -45,19 +37,6 @@ const (
 	ErrDraining = "server is not accepting clients"
 )
 
-// Fully-qualified names for metrics.
-var (
-	MetaConns = metric.Metadata{
-		Name: "sql.conns",
-		Help: "Number of active sql connections"}
-	MetaBytesIn = metric.Metadata{
-		Name: "sql.bytesin",
-		Help: "Number of sql bytes received"}
-	MetaBytesOut = metric.Metadata{
-		Name: "sql.bytesout",
-		Help: "Number of sql bytes sent"}
-)
-
 const (
 	version30  = 196608
 	versionSSL = 80877103
@@ -66,10 +45,6 @@ const (
 // cancelMaxWait is the amount of time a draining server gives to sessions to
 // react to cancellation and return before a forceful shutdown.
 const cancelMaxWait = 1 * time.Second
-
-// baseSQLMemoryBudget is the amount of memory pre-allocated in each connection.
-var baseSQLMemoryBudget = envutil.EnvOrDefaultInt64("COCKROACH_BASE_SQL_MEMORY_BUDGET",
-	int64(2.1*float64(mon.DefaultPoolAllocationSize)))
 
 // connReservationBatchSize determines for how many connections memory
 // is pre-reserved at once.
@@ -86,14 +61,11 @@ type cancelChanMap map[chan struct{}]context.CancelFunc
 
 // Server implements the server side of the PostgreSQL wire protocol.
 type Server struct {
-	AmbientCtx log.AmbientContext
-	cfg        *base.Config
-	executor   *sql.Executor
-
-	metrics ServerMetrics
+	cfg      *Config
+	executor Executor
 
 	mu struct {
-		syncutil.Mutex
+		sync.Mutex
 		// connCancelMap entries represent connections started when the server
 		// was not draining. Each value is a function that can be called to
 		// cancel the associated connection. The corresponding key is a channel
@@ -101,73 +73,14 @@ type Server struct {
 		connCancelMap cancelChanMap
 		draining      bool
 	}
-
-	sqlMemoryPool mon.BytesMonitor
-	connMonitor   mon.BytesMonitor
 }
-
-// ServerMetrics is the set of metrics for the pgwire server.
-type ServerMetrics struct {
-	BytesInCount   *metric.Counter
-	BytesOutCount  *metric.Counter
-	Conns          *metric.Gauge
-	ConnMemMetrics sql.MemoryMetrics
-	SQLMemMetrics  sql.MemoryMetrics
-
-	internalMemMetrics *sql.MemoryMetrics
-}
-
-func makeServerMetrics(
-	internalMemMetrics *sql.MemoryMetrics, histogramWindow time.Duration,
-) ServerMetrics {
-	return ServerMetrics{
-		BytesInCount:       metric.NewCounter(MetaBytesIn),
-		BytesOutCount:      metric.NewCounter(MetaBytesOut),
-		Conns:              metric.NewGauge(MetaConns),
-		ConnMemMetrics:     sql.MakeMemMetrics("conns", histogramWindow),
-		SQLMemMetrics:      sql.MakeMemMetrics("client", histogramWindow),
-		internalMemMetrics: internalMemMetrics,
-	}
-}
-
-// noteworthySQLMemoryUsageBytes is the minimum size tracked by the
-// client SQL pool before the pool start explicitly logging overall
-// usage growth in the log.
-var noteworthySQLMemoryUsageBytes = envutil.EnvOrDefaultInt64("COCKROACH_NOTEWORTHY_SQL_MEMORY_USAGE", 100*1024*1024)
-
-// noteworthyConnMemoryUsageBytes is the minimum size tracked by the
-// connection monitor before the monitor start explicitly logging overall
-// usage growth in the log.
-var noteworthyConnMemoryUsageBytes = envutil.EnvOrDefaultInt64("COCKROACH_NOTEWORTHY_CONN_MEMORY_USAGE", 2*1024*1024)
 
 // MakeServer creates a Server.
-func MakeServer(
-	ambientCtx log.AmbientContext,
-	cfg *base.Config,
-	executor *sql.Executor,
-	internalMemMetrics *sql.MemoryMetrics,
-	parentMemoryMonitor *mon.BytesMonitor,
-	histogramWindow time.Duration,
-) *Server {
+func MakeServer(cfg *Config, executor Executor) *Server {
 	server := &Server{
-		AmbientCtx: ambientCtx,
-		cfg:        cfg,
-		executor:   executor,
-		metrics:    makeServerMetrics(internalMemMetrics, histogramWindow),
+		cfg:      cfg,
+		executor: executor,
 	}
-	server.sqlMemoryPool = mon.MakeMonitor("sql",
-		mon.MemoryResource,
-		server.metrics.SQLMemMetrics.CurBytesCount,
-		server.metrics.SQLMemMetrics.MaxBytesHist,
-		0, noteworthySQLMemoryUsageBytes)
-	server.sqlMemoryPool.Start(context.Background(), parentMemoryMonitor, mon.BoundAccount{})
-
-	server.connMonitor = mon.MakeMonitor("conn",
-		mon.MemoryResource,
-		server.metrics.ConnMemMetrics.CurBytesCount,
-		server.metrics.ConnMemMetrics.MaxBytesHist,
-		int64(connReservationBatchSize)*baseSQLMemoryBudget, noteworthyConnMemoryUsageBytes)
-	server.connMonitor.Start(context.Background(), &server.sqlMemoryPool, mon.BoundAccount{})
 
 	server.mu.Lock()
 	server.mu.connCancelMap = make(cancelChanMap)
@@ -176,31 +89,12 @@ func MakeServer(
 	return server
 }
 
-// Match returns true if rd appears to be a Postgres connection.
-func Match(rd io.Reader) bool {
-	var buf pgwirebase.ReadBuffer
-	_, err := buf.ReadUntypedMsg(rd)
-	if err != nil {
-		return false
-	}
-	version, err := buf.GetUint32()
-	if err != nil {
-		return false
-	}
-	return version == version30 || version == versionSSL
-}
-
 // IsDraining returns true if the server is not currently accepting
 // connections.
 func (s *Server) IsDraining() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.mu.draining
-}
-
-// Metrics returns the metrics struct.
-func (s *Server) Metrics() *ServerMetrics {
-	return &s.metrics
 }
 
 // Drain prevents new connections from being served and waits for drainWait for
@@ -319,7 +213,7 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 	draining := s.mu.draining
 	if !draining {
 		var cancel context.CancelFunc
-		ctx, cancel = contextutil.WithCancel(ctx)
+		ctx, cancel = context.WithCancel(ctx)
 		done := make(chan struct{})
 		s.mu.connCancelMap[done] = cancel
 		defer func() {
@@ -332,25 +226,17 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 	}
 	s.mu.Unlock()
 
-	// If the Server is draining, we will use the connection only to send an
-	// error, so we don't count it in the stats. This makes sense since
-	// DrainClient() waits for that number to drop to zero,
-	// so we don't want it to oscillate unnecessarily.
-	if !draining {
-		s.metrics.Conns.Inc(1)
-		defer s.metrics.Conns.Dec(1)
-	}
-
 	var buf pgwirebase.ReadBuffer
-	n, err := buf.ReadUntypedMsg(conn)
+	_, err := buf.ReadUntypedMsg(conn)
 	if err != nil {
 		return err
 	}
-	s.metrics.BytesInCount.Inc(int64(n))
+
 	version, err := buf.GetUint32()
 	if err != nil {
 		return err
 	}
+
 	errSSLRequired := false
 	if version == versionSSL {
 		if len(buf.Msg) > 0 {
@@ -372,11 +258,10 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 			conn = tls.Server(conn, tlsConfig)
 		}
 
-		n, err := buf.ReadUntypedMsg(conn)
+		_, err := buf.ReadUntypedMsg(conn)
 		if err != nil {
 			return err
 		}
-		s.metrics.BytesInCount.Inc(int64(n))
 		version, err = buf.GetUint32()
 		if err != nil {
 			return err
@@ -389,7 +274,7 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 		// We make a connection before anything. If there is an error
 		// parsing the connection arguments, the connection will only be
 		// used to send a report of that error.
-		v3conn := makeV3Conn(conn, &s.metrics, &s.sqlMemoryPool, s.executor)
+		v3conn := makeV3Conn(conn, s.executor)
 		defer v3conn.finish(ctx)
 
 		if v3conn.sessionArgs, err = parseOptions(ctx, buf.Msg); err != nil {
@@ -408,22 +293,7 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 			return v3conn.sendError(pgerror.NewError(pgerror.CodeInvalidPasswordError, err.Error()))
 		}
 
-		// Reserve some memory for this connection using the server's
-		// monitor. This reduces pressure on the shared pool because the
-		// server monitor allocates in chunks from the shared pool and
-		// these chunks should be larger than baseSQLMemoryBudget.
-		//
-		// We only reserve memory to the connection monitor after
-		// authentication has completed successfully, so as to prevent a DoS
-		// attack: many open-but-unauthenticated connections that exhaust
-		// the memory available to connections already open.
-		acc := s.connMonitor.MakeBoundAccount()
-		if err := acc.Grow(ctx, baseSQLMemoryBudget); err != nil {
-			return errors.Errorf("unable to pre-allocate %d bytes for this connection: %v",
-				baseSQLMemoryBudget, err)
-		}
-
-		err := v3conn.serve(ctx, s.IsDraining, acc)
+		err := v3conn.serve(ctx, s.IsDraining)
 		// If the error that closed the connection is related to an
 		// administrative shutdown, relay that information to the client.
 		if pgErr, ok := pgerror.GetPGCause(err); ok && pgErr.Code == pgerror.CodeAdminShutdownError {

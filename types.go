@@ -382,7 +382,7 @@ func (b *writeBuffer) writeBinaryDatum(
 			return
 		}
 		// TODO(andrei): We shouldn't be allocating a new buffer for every array.
-		subWriter := newWriteBuffer(nil /* bytecount */)
+		subWriter := newWriteBuffer()
 		// Put the number of dimensions. We currently support 1d arrays only.
 		subWriter.putInt32(1)
 		hasNulls := 0

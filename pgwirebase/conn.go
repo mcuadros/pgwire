@@ -14,12 +14,6 @@
 
 package pgwirebase
 
-import (
-	"context"
-
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
-)
-
 // Conn exposes some functionality of a pgwire network connection to be
 // used by the Copy-in subprotocol implemented in the sql package.
 type Conn interface {
@@ -39,7 +33,7 @@ type Conn interface {
 	//
 	// Currently, we only support the "text" format for COPY IN.
 	// See: https://www.postgresql.org/docs/current/static/protocol-flow.html#PROTOCOL-COPY
-	BeginCopyIn(ctx context.Context, columns []sqlbase.ResultColumn) error
+	//BeginCopyIn(ctx context.Context, columns []sqlbase.ResultColumn) error
 
 	// SendCommandComplete sends a serverMsgCommandComplete with the given
 	// payload.

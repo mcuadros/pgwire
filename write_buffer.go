@@ -19,19 +19,15 @@ import (
 	"encoding/binary"
 	"io"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgwirebase"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/util"
-	"github.com/cockroachdb/cockroach/pkg/util/metric"
+
+	"github.com/mcuadros/pgwire/pgwirebase"
 )
 
 // writeBuffer is a wrapper around bytes.Buffer that provides a convenient interface
 // for writing PGWire results. The buffer preserves any errors it encounters when writing,
 // and will turn all subsequent write attempts into no-ops until finishMsg is called.
 type writeBuffer struct {
-	//lint:ignore U1000 this marker prevents by-value copies.
-	noCopy util.NoCopy
-
 	wrapped bytes.Buffer
 	err     error
 
@@ -46,17 +42,10 @@ type writeBuffer struct {
 	variablePutbuf  bytes.Buffer
 	simpleFormatter tree.FmtCtx
 	arrayFormatter  tree.FmtCtx
-
-	// bytecount counts the number of bytes written across all pgwire connections, not just this
-	// buffer. This is passed in so that finishMsg can track all messages we've sent to a network
-	// socket, reducing the onus on the many callers of finishMsg.
-	bytecount *metric.Counter
 }
 
-func newWriteBuffer(bytecount *metric.Counter) *writeBuffer {
-	b := &writeBuffer{
-		bytecount: bytecount,
-	}
+func newWriteBuffer() *writeBuffer {
+	b := &writeBuffer{}
 	b.simpleFormatter = tree.MakeFmtCtx(&b.variablePutbuf, tree.FmtSimple)
 	b.arrayFormatter = tree.MakeFmtCtx(&b.variablePutbuf, tree.FmtArrays)
 	return b
@@ -185,8 +174,7 @@ func (b *writeBuffer) finishMsg(w io.Writer) error {
 	}
 	bytes := b.wrapped.Bytes()
 	binary.BigEndian.PutUint32(bytes[1:5], uint32(b.wrapped.Len()-1))
-	n, err := w.Write(bytes)
-	b.bytecount.Inc(int64(n))
+	_, err := w.Write(bytes)
 	return err
 }
 

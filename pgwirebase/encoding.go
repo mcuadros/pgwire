@@ -21,7 +21,7 @@ import (
 	"io"
 	"unsafe"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
+	"github.com/mcuadros/pgwire/pgerror"
 )
 
 const maxMessageSize = 1 << 24
