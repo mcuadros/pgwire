@@ -30,7 +30,6 @@ import (
 	"io"
 
 	"github.com/mcuadros/pgwire/basesql"
-	"github.com/mcuadros/pgwire/datum"
 	"github.com/mcuadros/pgwire/pgerror"
 	"github.com/mcuadros/pgwire/pgwirebase"
 
@@ -106,7 +105,6 @@ type v3Conn struct {
 	executor Executor
 	readBuf  pgwirebase.ReadBuffer
 	writeBuf *writeBuffer
-	tagBuf   [64]byte
 	session  Session
 
 	// The logic governing these guys is hairy, and is not sufficiently
@@ -529,13 +527,6 @@ func (c *v3Conn) handleExecute(buf *pgwirebase.ReadBuffer) error {
 	return c.SendError(fmt.Errorf("not implemented"))
 }
 
-func (c *v3Conn) sendCommandComplete(tag []byte, w io.Writer) error {
-	c.writeBuf.initMsg(pgwirebase.ServerMsgCommandComplete)
-	c.writeBuf.write(tag)
-	c.writeBuf.nullTerminate()
-	return c.writeBuf.finishMsg(w)
-}
-
 func (c *v3Conn) SendError(err error) error {
 	c.executor.RecordError(err)
 	if c.doingExtendedQueryMessage {
@@ -607,44 +598,6 @@ func (c *v3Conn) sendNoData(w io.Writer) error {
 	return c.writeBuf.finishMsg(w)
 }
 
-// sendRowDescription sends a row description over the wire for the given
-// slice of columns.
-func (c *v3Conn) sendRowDescription(
-	ctx context.Context,
-	columns []ResultColumn,
-	formatCodes []pgwirebase.FormatCode,
-	w io.Writer,
-) error {
-	c.writeBuf.initMsg(pgwirebase.ServerMsgRowDescription)
-	c.writeBuf.putInt16(int16(len(columns)))
-	for i, column := range columns {
-		log.Debugf("pgwire: writing column %s of type: %T", column.Name, column.Typ)
-		c.writeBuf.writeTerminatedString(column.Name)
-
-		typ := pgTypeForParserType(column.Typ)
-		c.writeBuf.putInt32(0) // Table OID (optional).
-		c.writeBuf.putInt16(0) // Column attribute ID (optional).
-		c.writeBuf.putInt32(int32(typ.oid))
-		c.writeBuf.putInt16(int16(typ.size))
-		// The type modifier (atttypmod) is used to include various extra information
-		// about the type being sent. -1 is used for values which don't make use of
-		// atttypmod and is generally an acceptable catch-all for those that do.
-		// See https://www.postgresql.org/docs/9.6/static/catalog-pg-attribute.html
-		// for information on atttypmod. In theory we differ from Postgres by never
-		// giving the scale/precision, and by not including the length of a VARCHAR,
-		// but it's not clear if any drivers/ORMs depend on this.
-		//
-		// TODO(justin): It would be good to include this information when possible.
-		c.writeBuf.putInt32(-1)
-		if formatCodes == nil {
-			c.writeBuf.putInt16(int16(pgwirebase.FormatText))
-		} else {
-			c.writeBuf.putInt16(int16(formatCodes[i]))
-		}
-	}
-	return c.writeBuf.finishMsg(w)
-}
-
 // BeginCopyIn is part of the pgwirebase.Conn interface.
 func (c *v3Conn) BeginCopyIn(ctx context.Context, columns []ResultColumn) error {
 	c.writeBuf.initMsg(pgwirebase.ServerMsgCopyInResponse)
@@ -672,20 +625,8 @@ func (c *v3Conn) SetEmptyQuery() {
 	c.streamingState.emptyQuery = true
 }
 
-// SetEmptyQuery implements the ResultsGroup interface.
 func (c *v3Conn) NewStatementResult() StatementResult {
-	c.curStmtErr = nil
-	return c
-}
-
-// SetError is part of the sql.StatementResult interface.
-func (c *v3Conn) SetError(err error) {
-	c.curStmtErr = err
-}
-
-// Err is part of the sql.StatementResult interface.
-func (c *v3Conn) Err() error {
-	return c.curStmtErr
+	return NewStatementResult(&c.streamingState, c)
 }
 
 // ResultsSentToClient implements the ResultsGroup interface.
@@ -725,96 +666,6 @@ func (c *v3Conn) Flush(ctx context.Context) error {
 	return nil
 }
 
-// BeginResult implements the StatementResult interface.
-func (c *v3Conn) BeginResult(typ basesql.StatementType, tag basesql.StatementTag) {
-	state := &c.streamingState
-	state.pgTag = tag
-	state.statementType = typ
-	state.rowsAffected = 0
-	state.firstRow = true
-}
-
-// GetPGTag implements the StatementResult interface.
-func (c *v3Conn) StatementTag() basesql.StatementTag {
-	return c.streamingState.pgTag
-}
-
-// SetColumns implements the StatementResult interface.
-func (c *v3Conn) SetColumns(columns ResultColumns) {
-	c.streamingState.columns = columns
-}
-
-// RowsAffected implements the StatementResult interface.
-func (c *v3Conn) RowsAffected() int {
-	return c.streamingState.rowsAffected
-}
-
-// CloseResult implements the StatementResult interface.
-// It sends a "command complete" server message.
-func (c *v3Conn) CloseResult() error {
-	c.curStmtErr = nil
-
-	state := &c.streamingState
-	if state.err != nil {
-		return state.err
-	}
-
-	ctx := c.session.Ctx()
-	formatCodes := state.formatCodes
-	limit := state.limit
-
-	if err := c.flush(false /* forceSend */); err != nil {
-		return err
-	}
-
-	if limit != 0 && state.statementType == basesql.Rows && state.rowsAffected > state.limit {
-		return c.setError(pgerror.NewErrorf(
-			pgerror.CodeInternalError,
-			"execute row count limits not supported: %d of %d", limit, state.rowsAffected,
-		))
-	}
-
-	if state.pgTag == "INSERT" {
-		// From the postgres docs (49.5. Message Formats):
-		// `INSERT oid rows`... oid is the object ID of the inserted row if
-		//	rows is 1 and the target table has OIDs; otherwise oid is 0.
-		state.pgTag = "INSERT 0"
-	}
-	tag := append(c.tagBuf[:0], state.pgTag...)
-
-	switch state.statementType {
-	case basesql.RowsAffected:
-		tag = append(tag, ' ')
-		tag = strconv.AppendInt(tag, int64(state.rowsAffected), 10)
-		return c.sendCommandComplete(tag, &state.buf)
-
-	case basesql.Rows:
-		if state.firstRow && state.sendDescription {
-			if err := c.sendRowDescription(ctx, state.columns, formatCodes, &state.buf); err != nil {
-				return err
-			}
-		}
-
-		tag = append(tag, ' ')
-		tag = strconv.AppendUint(tag, uint64(state.rowsAffected), 10)
-		return c.sendCommandComplete(tag, &state.buf)
-
-	case basesql.Ack, basesql.DDL:
-		if state.pgTag == "SELECT" {
-			tag = append(tag, ' ')
-			tag = strconv.AppendInt(tag, int64(state.rowsAffected), 10)
-		}
-		return c.sendCommandComplete(tag, &state.buf)
-
-	case basesql.CopyIn:
-		// Nothing to do. The CommandComplete message has been sent elsewhere.
-		panic(fmt.Sprintf("CopyIn statements should have been handled elsewhere " +
-			"and not produce results"))
-	default:
-		panic(fmt.Sprintf("unexpected result type %v", state.statementType))
-	}
-}
-
 func (c *v3Conn) setError(err error) error {
 	if _, isWireFailure := err.(sql.WireFailureError); isWireFailure {
 		return err
@@ -835,65 +686,6 @@ func (c *v3Conn) setError(err error) error {
 		return sql.NewWireFailureError(err)
 	}
 	return nil
-}
-
-// StatementType implements the StatementResult interface.
-func (c *v3Conn) StatementType() basesql.StatementType {
-	return c.streamingState.statementType
-}
-
-// IncrementRowsAffected implements the StatementResult interface.
-func (c *v3Conn) IncrementRowsAffected(n int) {
-	c.streamingState.rowsAffected += n
-}
-
-// AddRow implements the StatementResult interface.
-func (c *v3Conn) AddRow(ctx context.Context, row datum.Datums) error {
-	state := &c.streamingState
-	if state.err != nil {
-		return state.err
-	}
-
-	if state.statementType != basesql.Rows {
-		return c.setError(pgerror.NewError(
-			pgerror.CodeInternalError, "cannot use AddRow() with statements that don't return rows"))
-	}
-
-	// The final tag will need to know the total row count.
-	state.rowsAffected++
-
-	formatCodes := state.formatCodes
-
-	// First row and description needed: do it.
-	if state.firstRow && state.sendDescription {
-		if err := c.sendRowDescription(ctx, state.columns, formatCodes, &state.buf); err != nil {
-			return err
-		}
-	}
-	state.firstRow = false
-
-	c.writeBuf.initMsg(pgwirebase.ServerMsgDataRow)
-	c.writeBuf.putInt16(int16(len(row)))
-	for i, col := range row {
-		fmtCode := pgwirebase.FormatText
-		if formatCodes != nil {
-			fmtCode = formatCodes[i]
-		}
-		switch fmtCode {
-		case pgwirebase.FormatText:
-			c.writeBuf.writeTextDatum(ctx, col, c.session.Location())
-		case pgwirebase.FormatBinary:
-			c.writeBuf.writeBinaryDatum(ctx, col, c.session.Location())
-		default:
-			c.writeBuf.setError(errors.Errorf("unsupported format code %s", fmtCode))
-		}
-	}
-
-	if err := c.writeBuf.finishMsg(&state.buf); err != nil {
-		return err
-	}
-
-	return c.flush(false /* forceSend */)
 }
 
 func (c *v3Conn) done() error {
@@ -950,9 +742,9 @@ func (c *v3Conn) Rd() pgwirebase.BufferedReader {
 }
 
 // SendCommandComplete is part of the pgwirebase.Conn interface.
-func (c *v3Conn) SendCommandComplete(tag []byte) error {
-	return c.sendCommandComplete(tag, &c.streamingState.buf)
-}
+//func (c *v3Conn) SendCommandComplete(tag []byte) error {
+//	return c.sendCommandComplete(tag, &c.streamingState.buf)
+//}
 
 // v3Conn implements pgwirebase.Conn.
 var _ pgwirebase.Conn = &v3Conn{}

@@ -2,9 +2,6 @@ package pgwire
 
 import (
 	"context"
-
-	"github.com/mcuadros/pgwire/basesql"
-	"github.com/mcuadros/pgwire/datum"
 )
 
 // ResultsWriter is the interface used to by the Executor to produce results for
@@ -108,40 +105,4 @@ type ResultsGroup interface {
 	// It is illegal to call Reset if any results have already been sent to the
 	// consumer; this can be tested with ResultsSentToClient().
 	Reset(context.Context)
-}
-
-// StatementResult is used to produce results for a single query (see
-// ResultsWriter).
-type StatementResult interface {
-	// BeginResult should be called prior to any of the other methods.
-	// TODO(andrei): remove BeginResult and SetColumns, and have
-	// NewStatementResult() take in a tree.Statement
-	BeginResult(typ basesql.StatementType, tag basesql.StatementTag)
-	// GetPGTag returns the PGTag of the statement passed into BeginResult.
-	StatementTag() basesql.StatementTag
-	// GetStatementType returns the StatementType that corresponds to the type of
-	// results that should be sent to this interface.
-	StatementType() basesql.StatementType
-	// SetColumns should be called after BeginResult and before AddRow if the
-	// StatementType is tree.Rows.
-	SetColumns(columns ResultColumns)
-	// AddRow takes the passed in row and adds it to the current result.
-	AddRow(ctx context.Context, row datum.Datums) error
-	// IncrementRowsAffected increments a counter by n. This is used for all
-	// result types other than tree.Rows.
-	IncrementRowsAffected(n int)
-	// RowsAffected returns either the number of times AddRow was called, or the
-	// sum of all n passed into IncrementRowsAffected.
-	RowsAffected() int
-	// CloseResult ends the current result. The v3Conn will send control codes to
-	// the client informing it that the result for a statement is now complete.
-	//
-	// CloseResult cannot be called unless there's a corresponding BeginResult
-	// prior.
-	CloseResult() error
-
-	// SetError allows an error to be  stored on the StatementResult.
-	SetError(err error)
-	// Err returns the error previously set with SetError(), if any.
-	Err() error
 }
