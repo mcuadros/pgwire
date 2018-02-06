@@ -28,8 +28,6 @@ func NewExecutor() pgwire.Executor {
 type executor struct{}
 
 func (e *executor) ExecuteStatements(s pgwire.Session, rw pgwire.ResultsWriter, stmts string) error {
-	fmt.Println("QUERY", stmts)
-
 	stmt, err := sqlparser.Parse(stmts)
 	if err != nil {
 		return err
