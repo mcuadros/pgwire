@@ -432,8 +432,8 @@ type DTimestamp struct {
 	time.Time
 }
 
-// MakeDTimestamp creates a DTimestamp with specified precision.
-func MakeDTimestamp(t time.Time, precision time.Duration) *DTimestamp {
+// NewDTimestamp creates a DTimestamp with specified precision.
+func NewDTimestamp(t time.Time, precision time.Duration) *DTimestamp {
 	return &DTimestamp{Time: t.Round(precision)}
 }
 

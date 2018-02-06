@@ -23,7 +23,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/lib/pq/oid"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
@@ -46,21 +45,11 @@ const (
 	authCleartextPassword int32 = 3
 )
 
+const ErrDraining = "server is not accepting clients"
+
 // connResultsBufferSizeBytes refers to the size of the result set which we
 // buffer into memory prior to flushing to the client.
 const connResultsBufferSizeBytes = 16 << 10
-
-// preparedStatementMeta is pgwire-specific metadata which is attached to each
-// sql.PreparedStatement on a v3Conn's sql.Session.
-type preparedStatementMeta struct {
-	inTypes []oid.Oid
-}
-
-// preparedPortalMeta is pgwire-specific metadata which is attached to each
-// sql.PreparedPortal on a v3Conn's sql.Session.
-type preparedPortalMeta struct {
-	outFormats []pgwirebase.FormatCode
-}
 
 // readTimeoutConn overloads net.Conn.Read by periodically calling
 // checkExitConds() and aborting the read if an error is returned.
@@ -111,15 +100,14 @@ func (c *readTimeoutConn) Read(b []byte) (int, error) {
 }
 
 type v3Conn struct {
-	conn        net.Conn
-	rd          *bufio.Reader
-	wr          *bufio.Writer
-	executor    Executor
-	readBuf     pgwirebase.ReadBuffer
-	writeBuf    *writeBuffer
-	tagBuf      [64]byte
-	sessionArgs sql.SessionArgs
-	session     Session
+	conn     net.Conn
+	rd       *bufio.Reader
+	wr       *bufio.Writer
+	executor Executor
+	readBuf  pgwirebase.ReadBuffer
+	writeBuf *writeBuffer
+	tagBuf   [64]byte
+	session  Session
 
 	// The logic governing these guys is hairy, and is not sufficiently
 	// specified in documentation. Consult the sources before you modify:
@@ -192,7 +180,7 @@ func (s *streamingState) reset(
 	s.buf.Reset()
 }
 
-func makeV3Conn(conn net.Conn, executor Executor) v3Conn {
+func NewV3Conn(conn net.Conn, executor Executor) v3Conn {
 	return v3Conn{
 		conn:     conn,
 		rd:       bufio.NewReader(conn),
@@ -202,7 +190,7 @@ func makeV3Conn(conn net.Conn, executor Executor) v3Conn {
 	}
 }
 
-func (c *v3Conn) finish(ctx context.Context) {
+func (c *v3Conn) Finish(ctx context.Context) {
 	// This is better than always flushing on error.
 	if err := c.wr.Flush(); err != nil {
 		log.Error(ctx, err)
@@ -210,7 +198,7 @@ func (c *v3Conn) finish(ctx context.Context) {
 	_ = c.conn.Close()
 }
 
-func parseOptions(ctx context.Context, data []byte) (sql.SessionArgs, error) {
+func ParseOptions(ctx context.Context, data []byte) (sql.SessionArgs, error) {
 	args := sql.SessionArgs{}
 	buf := pgwirebase.ReadBuffer{Msg: data}
 	for {
@@ -264,24 +252,24 @@ var statusReportParams = map[string]string{
 }
 
 // handleAuthentication should discuss with the client to arrange
-// authentication and update c.sessionArgs with the authenticated user's
+// authentication and update c.SessionArgs with the authenticated user's
 // name, if different from the one given initially. Note: at this
 // point the sql.Session does not exist yet! If need exists to access the
 // database to look up authentication data, use the internal executor.
-func (c *v3Conn) handleAuthentication(ctx context.Context, insecure bool) error {
+func (c *v3Conn) HandleAuthentication(ctx context.Context, insecure bool) error {
 	// Check that the requested user exists and retrieve the hashed
 	// password in case password authentication is needed.
 	var err error
 	exists, hashedPassword, err := true, []byte{}, nil
 	//TODO: exists, hashedPassword, err := sql.GetUserHashedPassword(
-	//	ctx, c.executor, c.metrics.internalMemMetrics, c.sessionArgs.User,
+	//	ctx, c.executor, c.metrics.internalMemMetrics, c.SessionArgs.User,
 	//)
 
 	if err != nil {
-		return c.sendError(err)
+		return c.SendError(err)
 	}
 	if !exists {
-		return c.sendError(errors.Errorf("user %s does not exist", c.sessionArgs.User))
+		return c.SendError(errors.Errorf("user %s does not exist", c.session.Args().User))
 	}
 
 	if tlsConn, ok := c.conn.(*tls.Conn); ok {
@@ -293,7 +281,7 @@ func (c *v3Conn) handleAuthentication(ctx context.Context, insecure bool) error 
 		if len(tlsState.PeerCertificates) == 0 {
 			password, err := c.sendAuthPasswordRequest()
 			if err != nil {
-				return c.sendError(err)
+				return c.SendError(err)
 			}
 			authenticationHook = security.UserAuthPasswordHook(
 				insecure, password, hashedPassword,
@@ -306,12 +294,12 @@ func (c *v3Conn) handleAuthentication(ctx context.Context, insecure bool) error 
 			var err error
 			authenticationHook, err = security.UserAuthCertHook(insecure, &tlsState)
 			if err != nil {
-				return c.sendError(err)
+				return c.SendError(err)
 			}
 		}
 
-		if err := authenticationHook(c.sessionArgs.User, true /* public */); err != nil {
-			return c.sendError(err)
+		if err := authenticationHook(c.session.Args().User, true /* public */); err != nil {
+			return c.SendError(err)
 		}
 	}
 
@@ -320,8 +308,8 @@ func (c *v3Conn) handleAuthentication(ctx context.Context, insecure bool) error 
 	return c.writeBuf.finishMsg(c.wr)
 }
 
-func (c *v3Conn) setupSession(ctx context.Context) error {
-	c.session = NewSession(ctx)
+func (c *v3Conn) setupSession(s Session) error {
+	c.session = s
 	return nil
 }
 
@@ -330,7 +318,11 @@ func (c *v3Conn) closeSession(ctx context.Context) {
 	c.session = nil
 }
 
-func (c *v3Conn) serve(ctx context.Context, draining func() bool) error {
+func (c *v3Conn) Serve(ctx context.Context, s Session, draining func() bool) error {
+	if err := c.setupSession(s); err != nil {
+		return err
+	}
+
 	for key, value := range statusReportParams {
 		c.writeBuf.initMsg(pgwirebase.ServerMsgParameterStatus)
 		c.writeBuf.writeTerminatedString(key)
@@ -343,11 +335,7 @@ func (c *v3Conn) serve(ctx context.Context, draining func() bool) error {
 		return err
 	}
 
-	//	ctx = log.WithLogTagStr(ctx, "user", c.sessionArgs.User)
-
-	if err := c.setupSession(ctx); err != nil {
-		return err
-	}
+	//	ctx = log.WithLogTagStr(ctx, "user", c.SessionArgs.User)
 
 	// Now that a Session has been set up, further operations done on behalf of
 	// this session use Session.Ctx() (which may diverge from this method's ctx).
@@ -470,7 +458,7 @@ func (c *v3Conn) serve(ctx context.Context, draining func() bool) error {
 			c.doNotSendReadyForQuery = true
 
 		default:
-			return c.sendError(pgwirebase.NewUnrecognizedMsgTypeErr(typ))
+			return c.SendError(pgwirebase.NewUnrecognizedMsgTypeErr(typ))
 		}
 		if err != nil {
 			return err
@@ -513,8 +501,7 @@ func (c *v3Conn) handleSimpleQuery(buf *pgwirebase.ReadBuffer) error {
 		nil /* formatCodes */, true /* sendDescription */, 0, /* limit */
 	)
 
-	c.session.SetResultsWriter(c)
-	if err := c.executor.ExecuteStatements(c.session, query); err != nil {
+	if err := c.executor.ExecuteStatements(c.session, c, query); err != nil {
 		if err := c.setError(err); err != nil {
 			return err
 		}
@@ -523,23 +510,23 @@ func (c *v3Conn) handleSimpleQuery(buf *pgwirebase.ReadBuffer) error {
 }
 
 func (c *v3Conn) handleParse(buf *pgwirebase.ReadBuffer) error {
-	return c.sendError(fmt.Errorf("not implemented"))
+	return c.SendError(fmt.Errorf("not implemented"))
 }
 
 func (c *v3Conn) handleDescribe(ctx context.Context, buf *pgwirebase.ReadBuffer) error {
-	return c.sendError(fmt.Errorf("not implemented"))
+	return c.SendError(fmt.Errorf("not implemented"))
 }
 
 func (c *v3Conn) handleClose(ctx context.Context, buf *pgwirebase.ReadBuffer) error {
-	return c.sendError(fmt.Errorf("not implemented"))
+	return c.SendError(fmt.Errorf("not implemented"))
 }
 
 func (c *v3Conn) handleBind(ctx context.Context, buf *pgwirebase.ReadBuffer) error {
-	return c.sendError(fmt.Errorf("not implemented"))
+	return c.SendError(fmt.Errorf("not implemented"))
 }
 
 func (c *v3Conn) handleExecute(buf *pgwirebase.ReadBuffer) error {
-	return c.sendError(fmt.Errorf("not implemented"))
+	return c.SendError(fmt.Errorf("not implemented"))
 }
 
 func (c *v3Conn) sendCommandComplete(tag []byte, w io.Writer) error {
@@ -549,7 +536,7 @@ func (c *v3Conn) sendCommandComplete(tag []byte, w io.Writer) error {
 	return c.writeBuf.finishMsg(w)
 }
 
-func (c *v3Conn) sendError(err error) error {
+func (c *v3Conn) SendError(err error) error {
 	c.executor.RecordError(err)
 	if c.doingExtendedQueryMessage {
 		c.ignoreTillSync = true
@@ -844,7 +831,7 @@ func (c *v3Conn) setError(err error) error {
 	if err := c.flush(true /* forceSend */); err != nil {
 		return sql.NewWireFailureError(err)
 	}
-	if err := c.sendError(err); err != nil {
+	if err := c.SendError(err); err != nil {
 		return sql.NewWireFailureError(err)
 	}
 	return nil
@@ -960,11 +947,6 @@ func (c *v3Conn) flush(forceSend bool) error {
 // Rd is part of the pgwirebase.Conn interface.
 func (c *v3Conn) Rd() pgwirebase.BufferedReader {
 	return &pgwireReader{conn: c}
-}
-
-// SendError is part of te pgwirebase.Conn interface.
-func (c *v3Conn) SendError(err error) error {
-	return c.sendError(err)
 }
 
 // SendCommandComplete is part of the pgwirebase.Conn interface.

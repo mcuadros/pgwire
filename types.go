@@ -23,10 +23,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/mcuadros/pgwire/datum"
-	"github.com/mcuadros/pgwire/pgerror"
 	"github.com/mcuadros/pgwire/types"
 
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
@@ -457,26 +455,11 @@ func timeToPgBinary(t time.Time, offset *time.Location) int64 {
 	return duration.DiffMicros(t, pgEpochJDate)
 }
 
-// pgBinaryToTime takes an int64 and interprets it as the Postgres binary format
-// for a timestamp. To create a timestamp from this value, it takes the microseconds
-// delta and adds it to pgEpochJDate.
-func pgBinaryToTime(i int64) time.Time {
-	return duration.AddMicros(pgEpochJDate, i)
-}
-
 // dateToPgBinary calculates the Postgres binary format for a date. The date is
 // represented as the number of days between the given date and Jan 1, 2000
 // (dubbed the pgEpochJDate), stored within an int32.
 func dateToPgBinary(d *datum.DDate) int32 {
 	return int32(*d) - pgEpochJDateFromUnix
-}
-
-// pgBinaryToDate takes an int32 and interprets it as the Postgres binary format
-// for a date. To create a date from this value, it takes the day delta and adds
-// it to pgEpochJDate.
-func pgBinaryToDate(i int32) *datum.DDate {
-	daysSinceEpoch := pgEpochJDateFromUnix + i
-	return datum.NewDDate(int64(daysSinceEpoch))
 }
 
 const (
@@ -487,14 +470,3 @@ const (
 	// AF_NET + 1.
 	pgBinaryIPv6family byte = 3
 )
-
-var invalidUTF8Error = pgerror.NewErrorf(pgerror.CodeCharacterNotInRepertoireError, "invalid UTF-8 sequence")
-
-// Values which are going to be converted to strings (STRING and NAME) need to
-// be valid UTF-8 for us to accept them.
-func validateStringBytes(b []byte) error {
-	if !utf8.Valid(b) {
-		return invalidUTF8Error
-	}
-	return nil
-}

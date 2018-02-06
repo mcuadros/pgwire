@@ -12,7 +12,7 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-package pgwire
+package server
 
 import (
 	"context"
@@ -21,10 +21,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/pgerror"
 	"github.com/mcuadros/pgwire/pgwirebase"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/pkg/errors"
 )
 
@@ -47,10 +47,6 @@ const (
 // react to cancellation and return before a forceful shutdown.
 const cancelMaxWait = 1 * time.Second
 
-// connReservationBatchSize determines for how many connections memory
-// is pre-reserved at once.
-var connReservationBatchSize = 5
-
 var (
 	sslSupported   = []byte{'S'}
 	sslUnsupported = []byte{'N'}
@@ -63,7 +59,9 @@ type cancelChanMap map[chan struct{}]context.CancelFunc
 // Server implements the server side of the PostgreSQL wire protocol.
 type Server struct {
 	cfg      *Config
-	executor Executor
+	executor pgwire.Executor
+
+	l net.Listener
 
 	mu struct {
 		sync.Mutex
@@ -76,18 +74,42 @@ type Server struct {
 	}
 }
 
-// MakeServer creates a Server.
-func MakeServer(cfg *Config, executor Executor) *Server {
-	server := &Server{
+func New(cfg *Config, e pgwire.Executor) *Server {
+	s := &Server{
 		cfg:      cfg,
-		executor: executor,
+		executor: e,
 	}
 
-	server.mu.Lock()
-	server.mu.connCancelMap = make(cancelChanMap)
-	server.mu.Unlock()
+	s.mu.Lock()
+	s.mu.connCancelMap = make(cancelChanMap)
+	s.mu.Unlock()
 
-	return server
+	return s
+}
+
+func (s *Server) Start() error {
+	if err := s.initialize(); err != nil {
+		return err
+	}
+
+	for {
+		conn, err := s.l.Accept()
+		if err != nil {
+			return err
+		}
+
+		go s.ServeConn(context.TODO(), conn)
+	}
+}
+
+func (s *Server) initialize() error {
+	if s.l == nil {
+		var err error
+		s.l, err = net.Listen("tcp", s.cfg.Addr)
+		return err
+	}
+
+	return nil
 }
 
 // IsDraining returns true if the server is not currently accepting
@@ -252,7 +274,7 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 			if _, err := conn.Write(sslSupported); err != nil {
 				return err
 			}
-			tlsConfig, err := s.cfg.GetServerTLSConfig()
+			tlsConfig, err := s.cfg.ServerTLSConfig()
 			if err != nil {
 				return err
 			}
@@ -275,30 +297,33 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 		// We make a connection before anything. If there is an error
 		// parsing the connection arguments, the connection will only be
 		// used to send a report of that error.
-		v3conn := makeV3Conn(conn, s.executor)
-		defer v3conn.finish(ctx)
+		v3conn := pgwire.NewV3Conn(conn, s.executor)
+		defer v3conn.Finish(ctx)
 
-		if v3conn.sessionArgs, err = parseOptions(ctx, buf.Msg); err != nil {
-			return v3conn.sendError(pgerror.NewError(pgerror.CodeProtocolViolationError, err.Error()))
+		args, err := pgwire.ParseOptions(ctx, buf.Msg)
+		if err != nil {
+			return v3conn.SendError(pgerror.NewError(pgerror.CodeProtocolViolationError, err.Error()))
 		}
 
 		if errSSLRequired {
-			return v3conn.sendError(pgerror.NewError(pgerror.CodeProtocolViolationError, ErrSSLRequired))
+			return v3conn.SendError(pgerror.NewError(pgerror.CodeProtocolViolationError, ErrSSLRequired))
 		}
+
 		if draining {
-			return v3conn.sendError(newAdminShutdownErr(errors.New(ErrDraining)))
+			return v3conn.SendError(pgerror.NewErrorf(pgerror.CodeAdminShutdownError, ErrDraining))
 		}
 
-		v3conn.sessionArgs.User = tree.Name(v3conn.sessionArgs.User).Normalize()
-		if err := v3conn.handleAuthentication(ctx, s.cfg.Insecure); err != nil {
-			return v3conn.sendError(pgerror.NewError(pgerror.CodeInvalidPasswordError, err.Error()))
+		//TODO:v3conn.sessionArgs.User = tree.Name(v3conn.sessionArgs.User).Normalize()
+		if err := v3conn.HandleAuthentication(ctx, s.cfg.Insecure); err != nil {
+			return v3conn.SendError(pgerror.NewError(pgerror.CodeInvalidPasswordError, err.Error()))
 		}
 
-		err := v3conn.serve(ctx, s.IsDraining)
+		session := pgwire.NewSession(ctx, args)
+		err = v3conn.Serve(ctx, session, s.IsDraining)
 		// If the error that closed the connection is related to an
 		// administrative shutdown, relay that information to the client.
 		if pgErr, ok := pgerror.GetPGCause(err); ok && pgErr.Code == pgerror.CodeAdminShutdownError {
-			return v3conn.sendError(err)
+			return v3conn.SendError(err)
 		}
 		return err
 	}
