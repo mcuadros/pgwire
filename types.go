@@ -31,12 +31,12 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/ipaddr"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 
 	"github.com/lib/pq/oid"
 	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
 )
 
 // pgType contains type metadata used in RowDescription messages.
@@ -85,9 +85,8 @@ func pgTypeForParserType(t types.T) pgType {
 const secondsInDay = 24 * 60 * 60
 
 func (b *writeBuffer) writeTextDatum(ctx context.Context, d datum.Datum, sessionLoc *time.Location) {
-	if log.V(2) {
-		log.Infof(ctx, "pgwire writing TEXT datum of type: %T, %#v", d, d)
-	}
+	log.Debugf("pgwire writing TEXT datum of type: %T, %#v", d, d)
+
 	if d == datum.DNull {
 		// NULL is encoded as -1; all other values have a length prefix.
 		b.putInt32(-1)
@@ -180,7 +179,7 @@ func (b *writeBuffer) writeTextDatum(ctx context.Context, d datum.Datum, session
 				// Emit nothing on NULL.
 				continue
 			}
-			b.simpleFormatter.FormatNode(d)
+			d.Format(&b.variablePutbuf)
 		}
 		b.variablePutbuf.WriteString(")")
 		b.writeLengthPrefixedVariablePutbuf()
@@ -201,7 +200,7 @@ func (b *writeBuffer) writeTextDatum(ctx context.Context, d datum.Datum, session
 				b.variablePutbuf.WriteString(sep)
 			}
 			// TODO(justin): add a test for nested arrays.
-			b.arrayFormatter.FormatNode(d)
+			d.Format(&b.variablePutbuf)
 		}
 		b.variablePutbuf.WriteString(end)
 		b.writeLengthPrefixedVariablePutbuf()
@@ -217,9 +216,7 @@ func (b *writeBuffer) writeTextDatum(ctx context.Context, d datum.Datum, session
 func (b *writeBuffer) writeBinaryDatum(
 	ctx context.Context, d datum.Datum, sessionLoc *time.Location,
 ) {
-	if log.V(2) {
-		log.Infof(ctx, "pgwire writing BINARY datum of type: %T, %#v", d, d)
-	}
+	log.Debugf("pgwire writing BINARY datum of type: %T, %#v", d, d)
 	if d == datum.DNull {
 		// NULL is encoded as -1; all other values have a length prefix.
 		b.putInt32(-1)

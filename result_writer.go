@@ -3,7 +3,7 @@ package pgwire
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/mcuadros/pgwire/basesql"
 	"github.com/mcuadros/pgwire/datum"
 )
 
@@ -116,12 +116,12 @@ type StatementResult interface {
 	// BeginResult should be called prior to any of the other methods.
 	// TODO(andrei): remove BeginResult and SetColumns, and have
 	// NewStatementResult() take in a tree.Statement
-	BeginResult(stmt tree.Statement)
+	BeginResult(typ basesql.StatementType, tag basesql.StatementTag)
 	// GetPGTag returns the PGTag of the statement passed into BeginResult.
-	PGTag() string
+	StatementTag() basesql.StatementTag
 	// GetStatementType returns the StatementType that corresponds to the type of
 	// results that should be sent to this interface.
-	StatementType() tree.StatementType
+	StatementType() basesql.StatementType
 	// SetColumns should be called after BeginResult and before AddRow if the
 	// StatementType is tree.Rows.
 	SetColumns(columns ResultColumns)

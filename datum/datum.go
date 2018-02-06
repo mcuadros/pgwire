@@ -23,12 +23,9 @@ import (
 	"time"
 	"unsafe"
 
-	"golang.org/x/text/collate"
-	"golang.org/x/text/language"
+	"github.com/mcuadros/pgwire/types"
 
 	"github.com/cockroachdb/apd"
-	"github.com/cockroachdb/cockroach/pkg/sql/coltypes"
-	"github.com/cockroachdb/cockroach/pkg/sql/lex"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/ipaddr"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
@@ -36,8 +33,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-
-	"github.com/mcuadros/pgwire/types"
+	"golang.org/x/text/collate"
+	"golang.org/x/text/language"
 )
 
 var (
@@ -210,7 +207,7 @@ func (d *DString) Size() uintptr {
 }
 
 func (d *DString) Format(w *bytes.Buffer) {
-	lex.EncodeSQLStringWithFlags(w, string(*d), 0)
+	EncodeSQLString(w, string(*d))
 }
 
 // DCollatedString is the Datum for strings with a locale. The struct members
@@ -275,9 +272,9 @@ func (d *DCollatedString) Size() uintptr {
 }
 
 func (d *DCollatedString) Format(w *bytes.Buffer) {
-	lex.EncodeSQLString(w, d.Contents)
+	EncodeSQLString(w, d.Contents)
 	w.WriteString(" COLLATE ")
-	lex.EncodeUnrestrictedSQLIdent(w, d.Locale, lex.EncNoFlags)
+	w.WriteString(d.Locale)
 }
 
 // DBytes is the bytes Datum. The underlying type is a string because we want
@@ -396,6 +393,14 @@ func (d *DDate) Size() uintptr {
 	return unsafe.Sizeof(*d)
 }
 
+const dateFormat = "2006-01-02"
+
+func (d *DDate) Format(w *bytes.Buffer) {
+	w.WriteByte('\'')
+	w.WriteString(timeutil.Unix(int64(*d)*SecondsInDay, 0).Format(dateFormat))
+	w.WriteByte('\'')
+}
+
 // DTime is the time Datum.
 type DTime timeofday.TimeOfDay
 
@@ -413,6 +418,13 @@ func (*DTime) ResolvedType() types.T {
 // Size implements the Datum interface.
 func (d *DTime) Size() uintptr {
 	return unsafe.Sizeof(*d)
+}
+
+// Format implements the NodeFormatter interface.
+func (d *DTime) Format(w *bytes.Buffer) {
+	w.WriteByte('\'')
+	w.WriteString(timeofday.TimeOfDay(*d).String())
+	w.WriteByte('\'')
 }
 
 // DTimestamp is the timestamp Datum.
@@ -433,6 +445,14 @@ func (*DTimestamp) ResolvedType() types.T {
 // Size implements the Datum interface.
 func (d *DTimestamp) Size() uintptr {
 	return unsafe.Sizeof(*d)
+}
+
+const TimestampOutputFormat = "2006-01-02 15:04:05.999999-07:00"
+
+func (d *DTimestamp) Format(w *bytes.Buffer) {
+	w.WriteByte('\'')
+	w.WriteString(d.UTC().Format(TimestampOutputFormat))
+	w.WriteByte('\'')
 }
 
 // DTimestampTZ is the timestamp Datum that is rendered with session offset.
@@ -461,6 +481,12 @@ func (d *DTimestampTZ) Size() uintptr {
 	return unsafe.Sizeof(*d)
 }
 
+func (d *DTimestampTZ) Format(w *bytes.Buffer) {
+	w.WriteByte('\'')
+	w.WriteString(d.Time.Format(TimestampOutputFormat))
+	w.WriteByte('\'')
+}
+
 // DInterval is the interval Datum.
 type DInterval struct {
 	duration.Duration
@@ -478,6 +504,13 @@ func (*DInterval) ResolvedType() types.T {
 // Size implements the Datum interface.
 func (d *DInterval) Size() uintptr {
 	return unsafe.Sizeof(*d)
+}
+
+// Format implements the NodeFormatter interface.
+func (d *DInterval) Format(w *bytes.Buffer) {
+	w.WriteByte('\'')
+	d.Duration.Format(w)
+	w.WriteByte('\'')
 }
 
 // DJSON is the JSON Datum.
@@ -513,6 +546,14 @@ func (*DJSON) ResolvedType() types.T {
 // TODO(justin): is this a frequently-called method? Should we be caching the computed size?
 func (d *DJSON) Size() uintptr {
 	return unsafe.Sizeof(*d) + d.JSON.Size()
+}
+
+// Format implements the NodeFormatter interface.
+func (d *DJSON) Format(w *bytes.Buffer) {
+	// TODO(justin): ideally the JSON string encoder should know it needs to
+	// escape things to be inside SQL strings in order to avoid this allocation.
+	s := d.JSON.String()
+	EncodeSQLString(w, s)
 }
 
 // DTuple is the tuple Datum.
@@ -558,6 +599,10 @@ func (d *DTuple) Size() uintptr {
 	return sz
 }
 
+func (d *DTuple) Format(w *bytes.Buffer) {
+	//TODO: w.FormatNode(&d.D)
+}
+
 type dNull struct{}
 
 // ResolvedType implements the TypedExpr interface.
@@ -568,6 +613,10 @@ func (dNull) ResolvedType() types.T {
 // Size implements the Datum interface.
 func (d dNull) Size() uintptr {
 	return unsafe.Sizeof(d)
+}
+
+func (dNull) Format(w *bytes.Buffer) {
+	w.WriteString("NULL")
 }
 
 // DArray is the array Datum. Any Datum inserted into a DArray are treated as
@@ -605,21 +654,29 @@ func (d *DArray) Size() uintptr {
 	return sz
 }
 
+func (d *DArray) Format(w *bytes.Buffer) {
+	w.WriteString("ARRAY[")
+	for i, v := range d.Array {
+		if i > 0 {
+			w.WriteString(",")
+		}
+		v.Format(w)
+	}
+	w.WriteByte(']')
+}
+
 // DOid is the Postgres OID datum. It can represent either an OID type or any
 // of the reg* types, such as regproc or regclass.
 type DOid struct {
 	// A DOid embeds a DInt, the underlying integer OID for this OID datum.
 	DInt
-	// semanticType indicates the particular variety of OID this datum is, whether raw
-	// oid or a reg* type.
-	semanticType *coltypes.TOid
 	// name is set to the resolved name of this OID, if available.
 	name string
 }
 
 // NewDOid is a helper routine to create a DOid initialized from a int64.
 func NewDOid(v int64) *DOid {
-	return &DOid{DInt: DInt(v), semanticType: coltypes.Oid, name: ""}
+	return &DOid{DInt: DInt(v), name: ""}
 }
 
 // ResolvedType implements the Datum interface.
@@ -629,6 +686,10 @@ func (d *DOid) ResolvedType() types.T {
 
 // Size implements the Datum interface.
 func (d *DOid) Size() uintptr { return unsafe.Sizeof(*d) }
+
+func (d *DOid) Format(w *bytes.Buffer) {
+	d.DInt.Format(w)
+}
 
 // DatumTypeSize returns a lower bound on the total size of a Datum
 // of the given type in bytes, including memory that is

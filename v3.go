@@ -30,6 +30,7 @@ import (
 	"bytes"
 	"io"
 
+	"github.com/mcuadros/pgwire/basesql"
 	"github.com/mcuadros/pgwire/datum"
 	"github.com/mcuadros/pgwire/pgerror"
 	"github.com/mcuadros/pgwire/pgwirebase"
@@ -169,9 +170,9 @@ type streamingState struct {
 
 	/* Current statement state */
 
-	pgTag         string
 	columns       ResultColumns
-	statementType tree.StatementType
+	pgTag         basesql.StatementTag
+	statementType basesql.StatementType
 	rowsAffected  int
 	// firstRow is true when we haven't sent a row back in a result of type
 	// tree.Rows. We only want to send the description once per result.
@@ -738,16 +739,16 @@ func (c *v3Conn) Flush(ctx context.Context) error {
 }
 
 // BeginResult implements the StatementResult interface.
-func (c *v3Conn) BeginResult(stmt tree.Statement) {
+func (c *v3Conn) BeginResult(typ basesql.StatementType, tag basesql.StatementTag) {
 	state := &c.streamingState
-	state.pgTag = stmt.StatementTag()
-	state.statementType = stmt.StatementType()
+	state.pgTag = tag
+	state.statementType = typ
 	state.rowsAffected = 0
 	state.firstRow = true
 }
 
 // GetPGTag implements the StatementResult interface.
-func (c *v3Conn) PGTag() string {
+func (c *v3Conn) StatementTag() basesql.StatementTag {
 	return c.streamingState.pgTag
 }
 
@@ -779,7 +780,7 @@ func (c *v3Conn) CloseResult() error {
 		return err
 	}
 
-	if limit != 0 && state.statementType == tree.Rows && state.rowsAffected > state.limit {
+	if limit != 0 && state.statementType == basesql.Rows && state.rowsAffected > state.limit {
 		return c.setError(pgerror.NewErrorf(
 			pgerror.CodeInternalError,
 			"execute row count limits not supported: %d of %d", limit, state.rowsAffected,
@@ -795,12 +796,12 @@ func (c *v3Conn) CloseResult() error {
 	tag := append(c.tagBuf[:0], state.pgTag...)
 
 	switch state.statementType {
-	case tree.RowsAffected:
+	case basesql.RowsAffected:
 		tag = append(tag, ' ')
 		tag = strconv.AppendInt(tag, int64(state.rowsAffected), 10)
 		return c.sendCommandComplete(tag, &state.buf)
 
-	case tree.Rows:
+	case basesql.Rows:
 		if state.firstRow && state.sendDescription {
 			if err := c.sendRowDescription(ctx, state.columns, formatCodes, &state.buf); err != nil {
 				return err
@@ -811,14 +812,14 @@ func (c *v3Conn) CloseResult() error {
 		tag = strconv.AppendUint(tag, uint64(state.rowsAffected), 10)
 		return c.sendCommandComplete(tag, &state.buf)
 
-	case tree.Ack, tree.DDL:
+	case basesql.Ack, basesql.DDL:
 		if state.pgTag == "SELECT" {
 			tag = append(tag, ' ')
 			tag = strconv.AppendInt(tag, int64(state.rowsAffected), 10)
 		}
 		return c.sendCommandComplete(tag, &state.buf)
 
-	case tree.CopyIn:
+	case basesql.CopyIn:
 		// Nothing to do. The CommandComplete message has been sent elsewhere.
 		panic(fmt.Sprintf("CopyIn statements should have been handled elsewhere " +
 			"and not produce results"))
@@ -850,7 +851,7 @@ func (c *v3Conn) setError(err error) error {
 }
 
 // StatementType implements the StatementResult interface.
-func (c *v3Conn) StatementType() tree.StatementType {
+func (c *v3Conn) StatementType() basesql.StatementType {
 	return c.streamingState.statementType
 }
 
@@ -866,8 +867,7 @@ func (c *v3Conn) AddRow(ctx context.Context, row datum.Datums) error {
 		return state.err
 	}
 
-	fmt.Println(state.statementType)
-	if state.statementType != tree.Rows {
+	if state.statementType != basesql.Rows {
 		return c.setError(pgerror.NewError(
 			pgerror.CodeInternalError, "cannot use AddRow() with statements that don't return rows"))
 	}

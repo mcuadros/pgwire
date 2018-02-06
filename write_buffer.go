@@ -19,8 +19,6 @@ import (
 	"encoding/binary"
 	"io"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-
 	"github.com/mcuadros/pgwire/datum"
 	"github.com/mcuadros/pgwire/pgwirebase"
 )
@@ -39,16 +37,12 @@ type writeBuffer struct {
 	// We keep both of these because there are operations that are only possible to
 	// perform (efficiently) with one or the other, such as strconv.AppendInt with
 	// putbuf or Datum.Format with variablePutbuf.
-	putbuf          [64]byte
-	variablePutbuf  bytes.Buffer
-	simpleFormatter tree.FmtCtx
-	arrayFormatter  tree.FmtCtx
+	putbuf         [64]byte
+	variablePutbuf bytes.Buffer
 }
 
 func newWriteBuffer() *writeBuffer {
 	b := &writeBuffer{}
-	b.simpleFormatter = tree.MakeFmtCtx(&b.variablePutbuf, tree.FmtSimple)
-	b.arrayFormatter = tree.MakeFmtCtx(&b.variablePutbuf, tree.FmtArrays)
 	return b
 }
 
@@ -115,8 +109,7 @@ func (b *writeBuffer) writeLengthPrefixedString(s string) {
 // writeLengthPrefixedDatum writes a length-prefixed Datum in its
 // string representation. The length is encoded as an int32.
 func (b *writeBuffer) writeLengthPrefixedDatum(d datum.Datum) {
-	fmtCtx := tree.MakeFmtCtx(&b.variablePutbuf, tree.FmtSimple)
-	fmtCtx.FormatNode(d)
+	d.Format(&b.variablePutbuf)
 	b.writeLengthPrefixedVariablePutbuf()
 }
 

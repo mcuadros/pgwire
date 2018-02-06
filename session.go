@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/mcuadros/pgwire/basesql"
 	"github.com/mcuadros/pgwire/datum"
 	"github.com/mcuadros/pgwire/types"
 )
@@ -71,7 +71,7 @@ func (e *executor) ExecuteStatements(s Session, stmts string) error {
 
 	defer group.Close()
 	sr := group.NewStatementResult()
-	sr.BeginResult((*tree.Select)(nil))
+	sr.BeginResult(basesql.Rows, basesql.SELECT)
 	sr.SetColumns(ResultColumns{{Name: "test", Typ: types.String}})
 
 	for i := 0; i < 10; i++ {
