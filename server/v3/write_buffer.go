@@ -20,7 +20,6 @@ import (
 	"io"
 
 	"github.com/mcuadros/pgwire"
-	"github.com/mcuadros/pgwire/pgwirebase"
 )
 
 // writeBuffer is a wrapper around bytes.Buffer that provides a convenient interface
@@ -140,7 +139,7 @@ func (b *writeBuffer) putInt64(v int64) {
 	}
 }
 
-func (b *writeBuffer) putErrFieldMsg(field pgwirebase.ServerErrFieldType) {
+func (b *writeBuffer) putErrFieldMsg(field pgwire.ServerErrFieldType) {
 	if b.err == nil {
 		b.err = b.wrapped.WriteByte(byte(field))
 	}
@@ -152,7 +151,7 @@ func (b *writeBuffer) reset() {
 }
 
 // initMsg begins writing a message into the writeBuffer with the provided type.
-func (b *writeBuffer) initMsg(typ pgwirebase.ServerMessageType) {
+func (b *writeBuffer) initMsg(typ pgwire.ServerMessageType) {
 	b.reset()
 	b.putbuf[0] = byte(typ)
 	_, b.err = b.wrapped.Write(b.putbuf[:5]) // message type + message length

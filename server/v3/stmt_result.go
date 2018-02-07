@@ -11,7 +11,6 @@ import (
 
 	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/pgerror"
-	"github.com/mcuadros/pgwire/pgwirebase"
 )
 
 type statementResult struct {
@@ -70,17 +69,17 @@ func (r *statementResult) AddRow(ctx context.Context, row pgwire.Datums) error {
 	}
 	r.state.firstRow = false
 
-	r.conn.writeBuf.initMsg(pgwirebase.ServerMsgDataRow)
+	r.conn.writeBuf.initMsg(pgwire.ServerMsgDataRow)
 	r.conn.writeBuf.putInt16(int16(len(row)))
 	for i, col := range row {
-		fmtCode := pgwirebase.FormatText
+		fmtCode := pgwire.FormatText
 		if formatCodes != nil {
 			fmtCode = formatCodes[i]
 		}
 		switch fmtCode {
-		case pgwirebase.FormatText:
+		case pgwire.FormatText:
 			r.conn.writeBuf.writeTextpgwire(ctx, col, r.conn.session.Location())
-		case pgwirebase.FormatBinary:
+		case pgwire.FormatBinary:
 			r.conn.writeBuf.writeBinarypgwire(ctx, col, r.conn.session.Location())
 		default:
 			r.conn.writeBuf.setError(errors.Errorf("unsupported format code %s", fmtCode))
@@ -167,7 +166,7 @@ func (r *statementResult) CloseResult() error {
 }
 
 func (r *statementResult) sendCommandComplete(tag []byte, w io.Writer) error {
-	r.conn.writeBuf.initMsg(pgwirebase.ServerMsgCommandComplete)
+	r.conn.writeBuf.initMsg(pgwire.ServerMsgCommandComplete)
 	r.conn.writeBuf.write(tag)
 	r.conn.writeBuf.nullTerminate()
 	return r.conn.writeBuf.finishMsg(w)
@@ -178,10 +177,10 @@ func (r *statementResult) sendCommandComplete(tag []byte, w io.Writer) error {
 func (r *statementResult) sendRowDescription(
 	ctx context.Context,
 	columns []pgwire.ResultColumn,
-	formatCodes []pgwirebase.FormatCode,
+	formatCodes []pgwire.FormatCode,
 	w io.Writer,
 ) error {
-	r.conn.writeBuf.initMsg(pgwirebase.ServerMsgRowDescription)
+	r.conn.writeBuf.initMsg(pgwire.ServerMsgRowDescription)
 	r.conn.writeBuf.putInt16(int16(len(columns)))
 	for i, column := range columns {
 		log.Debugf("pgwire: writing column %s of type: %T", column.Name, column.Typ)
@@ -203,7 +202,7 @@ func (r *statementResult) sendRowDescription(
 		// TODO(justin): It would be good to include this information when possible.
 		r.conn.writeBuf.putInt32(-1)
 		if formatCodes == nil {
-			r.conn.writeBuf.putInt16(int16(pgwirebase.FormatText))
+			r.conn.writeBuf.putInt16(int16(pgwire.FormatText))
 		} else {
 			r.conn.writeBuf.putInt16(int16(formatCodes[i]))
 		}

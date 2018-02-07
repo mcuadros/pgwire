@@ -31,7 +31,6 @@ import (
 
 	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/pgerror"
-	"github.com/mcuadros/pgwire/pgwirebase"
 
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	// To move
@@ -103,7 +102,7 @@ type v3Conn struct {
 	rd       *bufio.Reader
 	wr       *bufio.Writer
 	executor pgwire.Executor
-	readBuf  pgwirebase.ReadBuffer
+	readBuf  pgwire.ReadBuffer
 	writeBuf *writeBuffer
 	session  pgwire.Session
 
@@ -131,7 +130,7 @@ type streamingState struct {
 
 	// formatCodes is an array of which indicates whether each column of a row
 	// should be sent as binary or text format. If it is nil then we send as text.
-	formatCodes     []pgwirebase.FormatCode
+	formatCodes     []pgwire.FormatCode
 	sendDescription bool
 	// limit is a feature of pgwire that we don't really support. We accept it and
 	// don't complain as long as the statement produces fewer results than this.
@@ -166,7 +165,7 @@ type streamingState struct {
 }
 
 func (s *streamingState) reset(
-	formatCodes []pgwirebase.FormatCode, sendDescription bool, limit int,
+	formatCodes []pgwire.FormatCode, sendDescription bool, limit int,
 ) {
 	s.formatCodes = formatCodes
 	s.sendDescription = sendDescription
@@ -272,7 +271,7 @@ func (c *v3Conn) HandleAuthentication(ctx context.Context, insecure bool) error 
 		}
 	}
 
-	c.writeBuf.initMsg(pgwirebase.ServerMsgAuth)
+	c.writeBuf.initMsg(pgwire.ServerMsgAuth)
 	c.writeBuf.putInt32(authOK)
 	return c.writeBuf.finishMsg(c.wr)
 }
@@ -293,7 +292,7 @@ func (c *v3Conn) Serve(ctx context.Context, s pgwire.Session, draining func() bo
 	}
 
 	for key, value := range statusReportParams {
-		c.writeBuf.initMsg(pgwirebase.ServerMsgParameterStatus)
+		c.writeBuf.initMsg(pgwire.ServerMsgParameterStatus)
 		c.writeBuf.writeTerminatedString(key)
 		c.writeBuf.writeTerminatedString(value)
 		if err := c.writeBuf.finishMsg(c.wr); err != nil {
@@ -337,7 +336,7 @@ func (c *v3Conn) Serve(ctx context.Context, s pgwire.Session, draining func() bo
 
 	for {
 		if !c.doingExtendedQueryMessage && !c.doNotSendReadyForQuery {
-			c.writeBuf.initMsg(pgwirebase.ServerMsgReady)
+			c.writeBuf.initMsg(pgwire.ServerMsgReady)
 			var txnStatus byte
 			switch sql.NoTxn { //TODO c.session.TxnState.State() {
 			case sql.Aborted, sql.RestartWait:
@@ -356,7 +355,7 @@ func (c *v3Conn) Serve(ctx context.Context, s pgwire.Session, draining func() bo
 				txnStatus = 'T'
 			}
 
-			log.Debugf("pgwire: %s: %q", pgwirebase.ServerMsgReady, txnStatus)
+			log.Debugf("pgwire: %s: %q", pgwire.ServerMsgReady, txnStatus)
 
 			c.writeBuf.writeByte(txnStatus)
 			if err := c.writeBuf.finishMsg(c.wr); err != nil {
@@ -376,48 +375,48 @@ func (c *v3Conn) Serve(ctx context.Context, s pgwire.Session, draining func() bo
 		}
 		// When an error occurs handling an extended query message, we have to ignore
 		// any messages until we get a sync.
-		if c.ignoreTillSync && typ != pgwirebase.ClientMsgSync {
+		if c.ignoreTillSync && typ != pgwire.ClientMsgSync {
 			log.Debugf("pgwire: ignoring %s till sync", typ)
 			continue
 		}
 		log.Infof("pgwire: processing %s", typ)
 		switch typ {
-		case pgwirebase.ClientMsgSync:
+		case pgwire.ClientMsgSync:
 			c.doingExtendedQueryMessage = false
 			c.ignoreTillSync = false
 
-		case pgwirebase.ClientMsgSimpleQuery:
+		case pgwire.ClientMsgSimpleQuery:
 			c.doingExtendedQueryMessage = false
 			err = c.handleSimpleQuery(&c.readBuf)
 
-		case pgwirebase.ClientMsgTerminate:
+		case pgwire.ClientMsgTerminate:
 			return nil
 
-		case pgwirebase.ClientMsgParse:
+		case pgwire.ClientMsgParse:
 			c.doingExtendedQueryMessage = true
 			err = c.handleParse(&c.readBuf)
 
-		case pgwirebase.ClientMsgDescribe:
+		case pgwire.ClientMsgDescribe:
 			c.doingExtendedQueryMessage = true
 			err = c.handleDescribe(c.session.Ctx(), &c.readBuf)
 
-		case pgwirebase.ClientMsgClose:
+		case pgwire.ClientMsgClose:
 			c.doingExtendedQueryMessage = true
 			err = c.handleClose(c.session.Ctx(), &c.readBuf)
 
-		case pgwirebase.ClientMsgBind:
+		case pgwire.ClientMsgBind:
 			c.doingExtendedQueryMessage = true
 			err = c.handleBind(c.session.Ctx(), &c.readBuf)
 
-		case pgwirebase.ClientMsgExecute:
+		case pgwire.ClientMsgExecute:
 			c.doingExtendedQueryMessage = true
 			err = c.handleExecute(&c.readBuf)
 
-		case pgwirebase.ClientMsgFlush:
+		case pgwire.ClientMsgFlush:
 			c.doingExtendedQueryMessage = true
 			err = c.wr.Flush()
 
-		case pgwirebase.ClientMsgCopyData, pgwirebase.ClientMsgCopyDone, pgwirebase.ClientMsgCopyFail:
+		case pgwire.ClientMsgCopyData, pgwire.ClientMsgCopyDone, pgwire.ClientMsgCopyFail:
 			// We don't want to send a ready for query message here - we're supposed
 			// to ignore these messages, per the protocol spec. This state will
 			// happen when an error occurs on the server-side during a copy
@@ -427,7 +426,7 @@ func (c *v3Conn) Serve(ctx context.Context, s pgwire.Session, draining func() bo
 			c.doNotSendReadyForQuery = true
 
 		default:
-			return c.SendError(pgwirebase.NewUnrecognizedMsgTypeErr(typ))
+			return c.SendError(pgwire.NewUnrecognizedMsgTypeErr(typ))
 		}
 		if err != nil {
 			return err
@@ -438,7 +437,7 @@ func (c *v3Conn) Serve(ctx context.Context, s pgwire.Session, draining func() bo
 // sendAuthPasswordRequest requests a cleartext password from the client and
 // returns it.
 func (c *v3Conn) sendAuthPasswordRequest() (string, error) {
-	c.writeBuf.initMsg(pgwirebase.ServerMsgAuth)
+	c.writeBuf.initMsg(pgwire.ServerMsgAuth)
 	c.writeBuf.putInt32(authCleartextPassword)
 	if err := c.writeBuf.finishMsg(c.wr); err != nil {
 		return "", err
@@ -452,14 +451,14 @@ func (c *v3Conn) sendAuthPasswordRequest() (string, error) {
 		return "", err
 	}
 
-	if typ != pgwirebase.ClientMsgPassword {
+	if typ != pgwire.ClientMsgPassword {
 		return "", errors.Errorf("invalid response to authentication request: %s", typ)
 	}
 
 	return c.readBuf.GetString()
 }
 
-func (c *v3Conn) handleSimpleQuery(buf *pgwirebase.ReadBuffer) error {
+func (c *v3Conn) handleSimpleQuery(buf *pgwire.ReadBuffer) error {
 	defer c.session.FinishPlan()
 	query, err := buf.GetString()
 	if err != nil {
@@ -478,23 +477,23 @@ func (c *v3Conn) handleSimpleQuery(buf *pgwirebase.ReadBuffer) error {
 	return c.done()
 }
 
-func (c *v3Conn) handleParse(buf *pgwirebase.ReadBuffer) error {
+func (c *v3Conn) handleParse(buf *pgwire.ReadBuffer) error {
 	return c.SendError(fmt.Errorf("not implemented"))
 }
 
-func (c *v3Conn) handleDescribe(ctx context.Context, buf *pgwirebase.ReadBuffer) error {
+func (c *v3Conn) handleDescribe(ctx context.Context, buf *pgwire.ReadBuffer) error {
 	return c.SendError(fmt.Errorf("not implemented"))
 }
 
-func (c *v3Conn) handleClose(ctx context.Context, buf *pgwirebase.ReadBuffer) error {
+func (c *v3Conn) handleClose(ctx context.Context, buf *pgwire.ReadBuffer) error {
 	return c.SendError(fmt.Errorf("not implemented"))
 }
 
-func (c *v3Conn) handleBind(ctx context.Context, buf *pgwirebase.ReadBuffer) error {
+func (c *v3Conn) handleBind(ctx context.Context, buf *pgwire.ReadBuffer) error {
 	return c.SendError(fmt.Errorf("not implemented"))
 }
 
-func (c *v3Conn) handleExecute(buf *pgwirebase.ReadBuffer) error {
+func (c *v3Conn) handleExecute(buf *pgwire.ReadBuffer) error {
 	return c.SendError(fmt.Errorf("not implemented"))
 }
 
@@ -504,9 +503,9 @@ func (c *v3Conn) SendError(err error) error {
 		c.ignoreTillSync = true
 	}
 
-	c.writeBuf.initMsg(pgwirebase.ServerMsgErrorResponse)
+	c.writeBuf.initMsg(pgwire.ServerMsgErrorResponse)
 
-	c.writeBuf.putErrFieldMsg(pgwirebase.ServerErrFieldSeverity)
+	c.writeBuf.putErrFieldMsg(pgwire.ServerErrFieldSeverity)
 	c.writeBuf.writeTerminatedString("ERROR")
 
 	pgErr, ok := pgerror.GetPGCause(err)
@@ -517,38 +516,38 @@ func (c *v3Conn) SendError(err error) error {
 		code = pgerror.CodeInternalError
 	}
 
-	c.writeBuf.putErrFieldMsg(pgwirebase.ServerErrFieldSQLState)
+	c.writeBuf.putErrFieldMsg(pgwire.ServerErrFieldSQLState)
 	c.writeBuf.writeTerminatedString(code)
 
 	if ok && pgErr.Detail != "" {
-		c.writeBuf.putErrFieldMsg(pgwirebase.ServerErrFileldDetail)
+		c.writeBuf.putErrFieldMsg(pgwire.ServerErrFileldDetail)
 		c.writeBuf.writeTerminatedString(pgErr.Detail)
 	}
 
 	if ok && pgErr.Hint != "" {
-		c.writeBuf.putErrFieldMsg(pgwirebase.ServerErrFileldHint)
+		c.writeBuf.putErrFieldMsg(pgwire.ServerErrFileldHint)
 		c.writeBuf.writeTerminatedString(pgErr.Hint)
 	}
 
 	if ok && pgErr.Source != nil {
 		errCtx := pgErr.Source
 		if errCtx.File != "" {
-			c.writeBuf.putErrFieldMsg(pgwirebase.ServerErrFieldSrcFile)
+			c.writeBuf.putErrFieldMsg(pgwire.ServerErrFieldSrcFile)
 			c.writeBuf.writeTerminatedString(errCtx.File)
 		}
 
 		if errCtx.Line > 0 {
-			c.writeBuf.putErrFieldMsg(pgwirebase.ServerErrFieldSrcLine)
+			c.writeBuf.putErrFieldMsg(pgwire.ServerErrFieldSrcLine)
 			c.writeBuf.writeTerminatedString(strconv.Itoa(int(errCtx.Line)))
 		}
 
 		if errCtx.Function != "" {
-			c.writeBuf.putErrFieldMsg(pgwirebase.ServerErrFieldSrcFunction)
+			c.writeBuf.putErrFieldMsg(pgwire.ServerErrFieldSrcFunction)
 			c.writeBuf.writeTerminatedString(errCtx.Function)
 		}
 	}
 
-	c.writeBuf.putErrFieldMsg(pgwirebase.ServerErrFieldMsgPrimary)
+	c.writeBuf.putErrFieldMsg(pgwire.ServerErrFieldMsgPrimary)
 	c.writeBuf.writeTerminatedString(err.Error())
 
 	c.writeBuf.nullTerminate()
@@ -565,17 +564,17 @@ func (c *v3Conn) SendError(err error) error {
 // section of the docs here:
 // https://www.postgresql.org/docs/9.6/static/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY
 func (c *v3Conn) sendNoData(w io.Writer) error {
-	c.writeBuf.initMsg(pgwirebase.ServerMsgNoData)
+	c.writeBuf.initMsg(pgwire.ServerMsgNoData)
 	return c.writeBuf.finishMsg(w)
 }
 
-// BeginCopyIn is part of the pgwirebase.Conn interface.
+// BeginCopyIn is part of the pgwire.Conn interface.
 func (c *v3Conn) BeginCopyIn(ctx context.Context, columns []pgwire.ResultColumn) error {
-	c.writeBuf.initMsg(pgwirebase.ServerMsgCopyInResponse)
-	c.writeBuf.writeByte(byte(pgwirebase.FormatText))
+	c.writeBuf.initMsg(pgwire.ServerMsgCopyInResponse)
+	c.writeBuf.writeByte(byte(pgwire.FormatText))
 	c.writeBuf.putInt16(int16(len(columns)))
 	for range columns {
-		c.writeBuf.putInt16(int16(pgwirebase.FormatText))
+		c.writeBuf.putInt16(int16(pgwire.FormatText))
 	}
 	if err := c.writeBuf.finishMsg(c.wr); err != nil {
 		return sql.NewWireFailureError(err)
@@ -633,7 +632,7 @@ func (c *v3Conn) done() error {
 		// Generally a commandComplete message is written by each statement as it
 		// finishes writing its results. Except in this emptyQuery case, where the
 		// protocol mandates a particular response.
-		c.writeBuf.initMsg(pgwirebase.ServerMsgEmptyQuery)
+		c.writeBuf.initMsg(pgwire.ServerMsgEmptyQuery)
 		err = c.writeBuf.finishMsg(c.wr)
 	}
 
@@ -666,18 +665,15 @@ func (c *v3Conn) flush(forceSend bool) error {
 	return nil
 }
 
-// Rd is part of the pgwirebase.Conn interface.
-func (c *v3Conn) Rd() pgwirebase.BufferedReader {
+// Rd is part of the pgwire.Conn interface.
+func (c *v3Conn) Rd() pgwire.BufferedReader {
 	return &pgwireReader{conn: c}
 }
 
-// SendCommandComplete is part of the pgwirebase.Conn interface.
+// SendCommandComplete is part of the pgwire.Conn interface.
 //func (c *v3Conn) SendCommandComplete(tag []byte) error {
 //	return c.sendCommandComplete(tag, &c.streamingState.buf)
 //}
-
-// v3Conn implements pgwirebase.Conn.
-var _ pgwirebase.Conn = &v3Conn{}
 
 // pgwireReader is an io.Reader that wrapps a v3Conn, maintaining its metrics as
 // it is consumed.
@@ -685,22 +681,22 @@ type pgwireReader struct {
 	conn *v3Conn
 }
 
-// pgwireReader implements the pgwirebase.BufferedReader interface.
-var _ pgwirebase.BufferedReader = &pgwireReader{}
+// pgwireReader implements the pgwire.BufferedReader interface.
+var _ pgwire.BufferedReader = &pgwireReader{}
 
-// Read is part of the pgwirebase.BufferedReader interface.
+// Read is part of the pgwire.BufferedReader interface.
 func (r *pgwireReader) Read(p []byte) (int, error) {
 	n, err := r.conn.rd.Read(p)
 	return n, err
 }
 
-// ReadString is part of the pgwirebase.BufferedReader interface.
+// ReadString is part of the pgwire.BufferedReader interface.
 func (r *pgwireReader) ReadString(delim byte) (string, error) {
 	s, err := r.conn.rd.ReadString(delim)
 	return s, err
 }
 
-// ReadByte is part of the pgwirebase.BufferedReader interface.
+// ReadByte is part of the pgwire.BufferedReader interface.
 func (r *pgwireReader) ReadByte() (byte, error) {
 	b, err := r.conn.rd.ReadByte()
 	return b, err

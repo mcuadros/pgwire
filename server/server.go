@@ -23,7 +23,6 @@ import (
 
 	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/pgerror"
-	"github.com/mcuadros/pgwire/pgwirebase"
 	"github.com/mcuadros/pgwire/server/v3"
 
 	"github.com/pkg/errors"
@@ -250,7 +249,7 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 	}
 	s.mu.Unlock()
 
-	var buf pgwirebase.ReadBuffer
+	var buf pgwire.ReadBuffer
 	_, err := buf.ReadUntypedMsg(conn)
 	if err != nil {
 		return err

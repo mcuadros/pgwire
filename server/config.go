@@ -10,7 +10,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
-	"github.com/mcuadros/pgwire/pgwirebase"
+	"github.com/mcuadros/pgwire"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 )
@@ -198,7 +198,7 @@ func didYouMeanInsecureError(err error) error {
 
 func ParseOptions(ctx context.Context, data []byte) (sql.SessionArgs, error) {
 	args := sql.SessionArgs{}
-	buf := pgwirebase.ReadBuffer{Msg: data}
+	buf := pgwire.ReadBuffer{Msg: data}
 	for {
 		key, err := buf.GetString()
 		if err != nil {

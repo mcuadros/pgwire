@@ -12,7 +12,7 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-package pgwirebase
+package pgwire
 
 //ClientMessageType represents a client pgwire message.
 //go:generate stringer -type=ClientMessageType
