@@ -125,36 +125,21 @@ type v3Conn struct {
 }
 
 type streamingState struct {
-
-	/* Current batch state */
-
 	// formatCodes is an array of which indicates whether each column of a row
 	// should be sent as binary or text format. If it is nil then we send as text.
 	formatCodes     []pgwire.FormatCode
 	sendDescription bool
-	// limit is a feature of pgwire that we don't really support. We accept it and
-	// don't complain as long as the statement produces fewer results than this.
-	limit      int
-	emptyQuery bool
-	err        error
-
+	emptyQuery      bool
+	err             error
 	// hasSentResults is set if any results have been sent on the client
 	// connection since the last time Close() or Flush() were called. This is used
 	// to back the ResultGroup.ResultsSentToClient() interface.
 	hasSentResults bool
-
 	// TODO(tso): this can theoretically be combined with v3conn.writeBuf.
 	// Currently we write to write to the v3conn.writeBuf, then we take those
 	// bytes and write them to buf. We do this since we need to length prefix
 	// each message and this is icky to figure out ahead of time.
-	buf bytes.Buffer
-
-	// txnStartIdx is the start of the current transaction in the buf. We keep
-	// track of this so that we can reset the current transaction if we retry.
-	txnStartIdx int
-
-	/* Current statement state */
-
+	buf           bytes.Buffer
 	columns       pgwire.ResultColumns
 	pgTag         pgwire.StatementTag
 	statementType pgwire.StatementType
@@ -169,10 +154,8 @@ func (s *streamingState) reset(
 ) {
 	s.formatCodes = formatCodes
 	s.sendDescription = sendDescription
-	s.limit = limit
 	s.emptyQuery = false
 	s.hasSentResults = false
-	s.txnStartIdx = 0
 	s.err = nil
 	s.buf.Reset()
 }
@@ -210,7 +193,7 @@ var statusReportParams = map[string]string{
 	// of this package. We specify this version to avoid having to support old
 	// code paths which various client tools fall back to if they can't
 	// determine that the server is new enough.
-	"server_version": sql.PgServerVersion,
+	"server_version": pgwire.PgServerVersion,
 	// The current CockroachDB version string.
 	"crdb_version": "42",
 	// If this parameter is not present, some drivers (including Python's psycopg2)
@@ -237,7 +220,7 @@ func (c *v3Conn) HandleAuthentication(ctx context.Context, insecure bool) error 
 		return c.SendError(err)
 	}
 	if !exists {
-		return c.SendError(errors.Errorf("user %s does not exist", c.session.Args().User))
+		return c.SendError(errors.Errorf("user %s does not exist", c.session.User()))
 	}
 
 	if tlsConn, ok := c.conn.(*tls.Conn); ok {
@@ -266,7 +249,7 @@ func (c *v3Conn) HandleAuthentication(ctx context.Context, insecure bool) error 
 			}
 		}
 
-		if err := authenticationHook(c.session.Args().User, true /* public */); err != nil {
+		if err := authenticationHook(c.session.User(), true /* public */); err != nil {
 			return c.SendError(err)
 		}
 	}
@@ -276,20 +259,12 @@ func (c *v3Conn) HandleAuthentication(ctx context.Context, insecure bool) error 
 	return c.writeBuf.finishMsg(c.wr)
 }
 
-func (c *v3Conn) setupSession(s pgwire.Session) error {
-	c.session = s
-	return nil
-}
-
 func (c *v3Conn) closeSession(ctx context.Context) {
-	c.session.Finish()
 	c.session = nil
 }
 
 func (c *v3Conn) Serve(ctx context.Context, s pgwire.Session, draining func() bool) error {
-	if err := c.setupSession(s); err != nil {
-		return err
-	}
+	c.session = s
 
 	for key, value := range statusReportParams {
 		c.writeBuf.initMsg(pgwire.ServerMsgParameterStatus)
@@ -459,7 +434,6 @@ func (c *v3Conn) sendAuthPasswordRequest() (string, error) {
 }
 
 func (c *v3Conn) handleSimpleQuery(buf *pgwire.ReadBuffer) error {
-	defer c.session.FinishPlan()
 	query, err := buf.GetString()
 	if err != nil {
 		return err
@@ -607,7 +581,7 @@ func (c *v3Conn) setError(err error) error {
 
 	state.hasSentResults = true
 	state.err = err
-	state.buf.Truncate(state.txnStartIdx)
+	state.buf.Truncate(0)
 	if err := c.flush(true /* forceSend */); err != nil {
 		return sql.NewWireFailureError(err)
 	}
@@ -653,7 +627,6 @@ func (c *v3Conn) flush(forceSend bool) error {
 
 	if forceSend || state.buf.Len() > connResultsBufferSizeBytes {
 		state.hasSentResults = true
-		state.txnStartIdx = 0
 		if _, err := state.buf.WriteTo(c.wr); err != nil {
 			return sql.NewWireFailureError(err)
 		}
@@ -664,16 +637,6 @@ func (c *v3Conn) flush(forceSend bool) error {
 
 	return nil
 }
-
-// Rd is part of the pgwire.Conn interface.
-func (c *v3Conn) Rd() pgwire.BufferedReader {
-	return &pgwireReader{conn: c}
-}
-
-// SendCommandComplete is part of the pgwire.Conn interface.
-//func (c *v3Conn) SendCommandComplete(tag []byte) error {
-//	return c.sendCommandComplete(tag, &c.streamingState.buf)
-//}
 
 // pgwireReader is an io.Reader that wrapps a v3Conn, maintaining its metrics as
 // it is consumed.

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/security"
-	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/mcuadros/pgwire"
 	"github.com/pkg/errors"
@@ -196,20 +195,21 @@ func didYouMeanInsecureError(err error) error {
 	return errors.Wrap(err, "problem using security settings, did you mean to use --insecure?")
 }
 
-func ParseOptions(ctx context.Context, data []byte) (sql.SessionArgs, error) {
-	args := sql.SessionArgs{}
+func ParseOptions(ctx context.Context, data []byte) (pgwire.SessionArgs, error) {
+	var args pgwire.SessionArgs
+
 	buf := pgwire.ReadBuffer{Msg: data}
 	for {
 		key, err := buf.GetString()
 		if err != nil {
-			return sql.SessionArgs{}, errors.Errorf("error reading option key: %s", err)
+			return args, errors.Errorf("error reading option key: %s", err)
 		}
 		if len(key) == 0 {
 			break
 		}
 		value, err := buf.GetString()
 		if err != nil {
-			return sql.SessionArgs{}, errors.Errorf("error reading option value: %s", err)
+			return args, errors.Errorf("error reading option value: %s", err)
 		}
 		switch key {
 		case "database":
@@ -218,9 +218,12 @@ func ParseOptions(ctx context.Context, data []byte) (sql.SessionArgs, error) {
 			args.User = value
 		case "application_name":
 			args.ApplicationName = value
+		case "client_encoding":
+			args.ClientEncoding = value
 		default:
 			log.Warningf("unrecognized configuration parameter %q", key)
 		}
 	}
+
 	return args, nil
 }
