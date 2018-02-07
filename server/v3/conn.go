@@ -12,7 +12,7 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-package pgwire
+package v3
 
 import (
 	"bufio"
@@ -29,7 +29,7 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/mcuadros/pgwire/basesql"
+	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/pgerror"
 	"github.com/mcuadros/pgwire/pgwirebase"
 
@@ -102,10 +102,10 @@ type v3Conn struct {
 	conn     net.Conn
 	rd       *bufio.Reader
 	wr       *bufio.Writer
-	executor Executor
+	executor pgwire.Executor
 	readBuf  pgwirebase.ReadBuffer
 	writeBuf *writeBuffer
-	session  Session
+	session  pgwire.Session
 
 	// The logic governing these guys is hairy, and is not sufficiently
 	// specified in documentation. Consult the sources before you modify:
@@ -156,9 +156,9 @@ type streamingState struct {
 
 	/* Current statement state */
 
-	columns       ResultColumns
-	pgTag         basesql.StatementTag
-	statementType basesql.StatementType
+	columns       pgwire.ResultColumns
+	pgTag         pgwire.StatementTag
+	statementType pgwire.StatementType
 	rowsAffected  int
 	// firstRow is true when we haven't sent a row back in a result of type
 	// tree.Rows. We only want to send the description once per result.
@@ -178,7 +178,7 @@ func (s *streamingState) reset(
 	s.buf.Reset()
 }
 
-func NewV3Conn(conn net.Conn, executor Executor) v3Conn {
+func NewConn(conn net.Conn, executor pgwire.Executor) v3Conn {
 	return v3Conn{
 		conn:     conn,
 		rd:       bufio.NewReader(conn),
@@ -194,35 +194,6 @@ func (c *v3Conn) Finish(ctx context.Context) {
 		log.Error(ctx, err)
 	}
 	_ = c.conn.Close()
-}
-
-func ParseOptions(ctx context.Context, data []byte) (sql.SessionArgs, error) {
-	args := sql.SessionArgs{}
-	buf := pgwirebase.ReadBuffer{Msg: data}
-	for {
-		key, err := buf.GetString()
-		if err != nil {
-			return sql.SessionArgs{}, errors.Errorf("error reading option key: %s", err)
-		}
-		if len(key) == 0 {
-			break
-		}
-		value, err := buf.GetString()
-		if err != nil {
-			return sql.SessionArgs{}, errors.Errorf("error reading option value: %s", err)
-		}
-		switch key {
-		case "database":
-			args.Database = value
-		case "user":
-			args.User = value
-		case "application_name":
-			args.ApplicationName = value
-		default:
-			log.Warningf("unrecognized configuration parameter %q", key)
-		}
-	}
-	return args, nil
 }
 
 // statusReportParams is a static mapping from run-time parameters to their respective
@@ -306,7 +277,7 @@ func (c *v3Conn) HandleAuthentication(ctx context.Context, insecure bool) error 
 	return c.writeBuf.finishMsg(c.wr)
 }
 
-func (c *v3Conn) setupSession(s Session) error {
+func (c *v3Conn) setupSession(s pgwire.Session) error {
 	c.session = s
 	return nil
 }
@@ -316,7 +287,7 @@ func (c *v3Conn) closeSession(ctx context.Context) {
 	c.session = nil
 }
 
-func (c *v3Conn) Serve(ctx context.Context, s Session, draining func() bool) error {
+func (c *v3Conn) Serve(ctx context.Context, s pgwire.Session, draining func() bool) error {
 	if err := c.setupSession(s); err != nil {
 		return err
 	}
@@ -599,7 +570,7 @@ func (c *v3Conn) sendNoData(w io.Writer) error {
 }
 
 // BeginCopyIn is part of the pgwirebase.Conn interface.
-func (c *v3Conn) BeginCopyIn(ctx context.Context, columns []ResultColumn) error {
+func (c *v3Conn) BeginCopyIn(ctx context.Context, columns []pgwire.ResultColumn) error {
 	c.writeBuf.initMsg(pgwirebase.ServerMsgCopyInResponse)
 	c.writeBuf.writeByte(byte(pgwirebase.FormatText))
 	c.writeBuf.putInt16(int16(len(columns)))
@@ -616,54 +587,13 @@ func (c *v3Conn) BeginCopyIn(ctx context.Context, columns []ResultColumn) error 
 }
 
 // NewResultsGroup is part of the ResultsWriter interface.
-func (c *v3Conn) NewResultsGroup() ResultsGroup {
-	return c
+func (c *v3Conn) NewResultsGroup() pgwire.ResultsGroup {
+	return NewResultsGroup(&c.streamingState, c)
 }
 
 // SetEmptyQuery is part of the ResultsWriter interface.
 func (c *v3Conn) SetEmptyQuery() {
 	c.streamingState.emptyQuery = true
-}
-
-func (c *v3Conn) NewStatementResult() StatementResult {
-	return NewStatementResult(&c.streamingState, c)
-}
-
-// ResultsSentToClient implements the ResultsGroup interface.
-func (c *v3Conn) ResultsSentToClient() bool {
-	return c.streamingState.hasSentResults
-}
-
-// Close implements the ResultsGroup interface.
-func (c *v3Conn) Close() {
-	// TODO(andrei): should we flush here?
-
-	s := &c.streamingState
-	s.txnStartIdx = s.buf.Len()
-	// TODO(andrei): emptyQuery is a per-statement field. It shouldn't be set in a
-	// per-group method.
-	s.emptyQuery = false
-	s.hasSentResults = false
-}
-
-// Reset implements the ResultsGroup interface.
-func (c *v3Conn) Reset(ctx context.Context) {
-	s := &c.streamingState
-	if s.hasSentResults {
-		panic("cannot reset if we've already sent results for group")
-	}
-	s.emptyQuery = false
-	s.buf.Truncate(s.txnStartIdx)
-}
-
-// Flush implements the ResultsGroup interface.
-func (c *v3Conn) Flush(ctx context.Context) error {
-	if err := c.flush(true /* forceSend */); err != nil {
-		return err
-	}
-	// hasSentResults is relative to the Flush() point, so we reset it here.
-	c.streamingState.hasSentResults = false
-	return nil
 }
 
 func (c *v3Conn) setError(err error) error {

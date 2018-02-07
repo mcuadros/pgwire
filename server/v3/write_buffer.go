@@ -12,14 +12,14 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-package pgwire
+package v3
 
 import (
 	"bytes"
 	"encoding/binary"
 	"io"
 
-	"github.com/mcuadros/pgwire/datum"
+	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/pgwirebase"
 )
 
@@ -36,7 +36,7 @@ type writeBuffer struct {
 	//
 	// We keep both of these because there are operations that are only possible to
 	// perform (efficiently) with one or the other, such as strconv.AppendInt with
-	// putbuf or Datum.Format with variablePutbuf.
+	// putbuf or pgwire.Format with variablePutbuf.
 	putbuf         [64]byte
 	variablePutbuf bytes.Buffer
 }
@@ -106,9 +106,9 @@ func (b *writeBuffer) writeLengthPrefixedString(s string) {
 	b.writeString(s)
 }
 
-// writeLengthPrefixedDatum writes a length-prefixed Datum in its
+// writeLengthPrefixedpgwire writes a length-prefixed pgwire in its
 // string representation. The length is encoded as an int32.
-func (b *writeBuffer) writeLengthPrefixedDatum(d datum.Datum) {
+func (b *writeBuffer) writeLengthPrefixedpgwire(d pgwire.Datum) {
 	d.Format(&b.variablePutbuf)
 	b.writeLengthPrefixedVariablePutbuf()
 }

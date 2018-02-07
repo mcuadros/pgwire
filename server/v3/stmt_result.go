@@ -1,4 +1,4 @@
-package pgwire
+package v3
 
 import (
 	"context"
@@ -9,46 +9,10 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
-	"github.com/mcuadros/pgwire/basesql"
-	"github.com/mcuadros/pgwire/datum"
+	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/pgerror"
 	"github.com/mcuadros/pgwire/pgwirebase"
 )
-
-// StatementResult is used to produce results for a single query (see
-// ResultsWriter).
-type StatementResult interface {
-	// BeginResult should be called prior to any of the other methods.
-	// TODO(andrei): remove BeginResult and SetColumns, and have
-	// NewStatementResult() take in a tree.Statement
-	BeginResult(typ basesql.StatementType, tag basesql.StatementTag)
-	// GetPGTag returns the PGTag of the statement passed into BeginResult.
-	StatementTag() basesql.StatementTag
-	// GetStatementType returns the StatementType that corresponds to the type of
-	// results that should be sent to this interface.
-	StatementType() basesql.StatementType
-	// SetColumns should be called after BeginResult and before AddRow if the
-	// StatementType is tree.Rows.
-	SetColumns(columns ResultColumns)
-	// AddRow takes the passed in row and adds it to the current result.
-	AddRow(ctx context.Context, row datum.Datums) error
-	// IncrementRowsAffected increments a counter by n. This is used for all
-	// result types other than tree.Rows.
-	IncrementRowsAffected(n int)
-	// RowsAffected returns either the number of times AddRow was called, or the
-	// sum of all n passed into IncrementRowsAffected.
-	RowsAffected() int
-	// CloseResult ends the current result. The v3Conn will send control codes to
-	// the client informing it that the result for a statement is now complete.
-	//
-	// CloseResult cannot be called unless there's a corresponding BeginResult
-	// prior.
-	CloseResult() error
-	// SetError allows an error to be stored on the StatementResult.
-	SetError(err error)
-	// Err returns the error previously set with SetError(), if any.
-	Err() error
-}
 
 type statementResult struct {
 	state *streamingState
@@ -58,36 +22,36 @@ type statementResult struct {
 	curStmtErr error
 }
 
-func NewStatementResult(s *streamingState, conn *v3Conn) StatementResult {
+func NewStatementResult(s *streamingState, conn *v3Conn) pgwire.StatementResult {
 	return &statementResult{state: s, conn: conn}
 }
 
 // BeginResult implements the StatementResult interface.
-func (r *statementResult) BeginResult(typ basesql.StatementType, tag basesql.StatementTag) {
+func (r *statementResult) BeginResult(typ pgwire.StatementType, tag pgwire.StatementTag) {
 	r.state.pgTag = tag
 	r.state.statementType = typ
 	r.state.rowsAffected = 0
 	r.state.firstRow = true
 }
 
-func (r *statementResult) StatementTag() basesql.StatementTag {
+func (r *statementResult) StatementTag() pgwire.StatementTag {
 	return r.state.pgTag
 }
 
-func (r *statementResult) StatementType() basesql.StatementType {
+func (r *statementResult) StatementType() pgwire.StatementType {
 	return r.state.statementType
 }
 
-func (r *statementResult) SetColumns(columns ResultColumns) {
+func (r *statementResult) SetColumns(columns pgwire.ResultColumns) {
 	r.state.columns = columns
 }
 
-func (r *statementResult) AddRow(ctx context.Context, row datum.Datums) error {
+func (r *statementResult) AddRow(ctx context.Context, row pgwire.Datums) error {
 	if r.state.err != nil {
 		return r.state.err
 	}
 
-	if r.state.statementType != basesql.Rows {
+	if r.state.statementType != pgwire.Rows {
 		// it was v3.setError
 		return r.conn.setError(pgerror.NewError(
 			pgerror.CodeInternalError, "cannot use AddRow() with statements that don't return rows"))
@@ -115,9 +79,9 @@ func (r *statementResult) AddRow(ctx context.Context, row datum.Datums) error {
 		}
 		switch fmtCode {
 		case pgwirebase.FormatText:
-			r.conn.writeBuf.writeTextDatum(ctx, col, r.conn.session.Location())
+			r.conn.writeBuf.writeTextpgwire(ctx, col, r.conn.session.Location())
 		case pgwirebase.FormatBinary:
-			r.conn.writeBuf.writeBinaryDatum(ctx, col, r.conn.session.Location())
+			r.conn.writeBuf.writeBinarypgwire(ctx, col, r.conn.session.Location())
 		default:
 			r.conn.writeBuf.setError(errors.Errorf("unsupported format code %s", fmtCode))
 		}
@@ -168,12 +132,12 @@ func (r *statementResult) CloseResult() error {
 	tag := append(r.tagBuf[:0], r.state.pgTag...)
 
 	switch r.state.statementType {
-	case basesql.RowsAffected:
+	case pgwire.RowsAffected:
 		tag = append(tag, ' ')
 		tag = strconv.AppendInt(tag, int64(r.state.rowsAffected), 10)
 		return r.sendCommandComplete(tag, &r.state.buf)
 
-	case basesql.Rows:
+	case pgwire.Rows:
 		if r.state.firstRow && r.state.sendDescription {
 			if err := r.sendRowDescription(ctx,
 				r.state.columns, r.state.formatCodes, &r.state.buf,
@@ -186,14 +150,14 @@ func (r *statementResult) CloseResult() error {
 		tag = strconv.AppendUint(tag, uint64(r.state.rowsAffected), 10)
 		return r.sendCommandComplete(tag, &r.state.buf)
 
-	case basesql.Ack, basesql.DDL:
+	case pgwire.Ack, pgwire.DDL:
 		if r.state.pgTag == "SELECT" {
 			tag = append(tag, ' ')
 			tag = strconv.AppendInt(tag, int64(r.state.rowsAffected), 10)
 		}
 		return r.sendCommandComplete(tag, &r.state.buf)
 
-	case basesql.CopyIn:
+	case pgwire.CopyIn:
 		// Nothing to do. The CommandComplete message has been sent elsewhere.
 		panic(fmt.Sprintf("CopyIn statements should have been handled elsewhere " +
 			"and not produce results"))
@@ -213,7 +177,7 @@ func (r *statementResult) sendCommandComplete(tag []byte, w io.Writer) error {
 // slice of columns.
 func (r *statementResult) sendRowDescription(
 	ctx context.Context,
-	columns []ResultColumn,
+	columns []pgwire.ResultColumn,
 	formatCodes []pgwirebase.FormatCode,
 	w io.Writer,
 ) error {

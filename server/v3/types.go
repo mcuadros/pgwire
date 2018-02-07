@@ -12,7 +12,7 @@
 // implied. See the License for the specific language governing
 // permissions and limitations under the License.
 
-package pgwire
+package v3
 
 import (
 	"context"
@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mcuadros/pgwire/datum"
+	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/types"
 
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
@@ -71,7 +71,7 @@ type pgNumeric struct {
 
 func pgTypeForParserType(t types.T) pgType {
 	size := -1
-	if s, variable := datum.DatumTypeSize(t); !variable {
+	if s, variable := pgwire.DatumTypeSize(t); !variable {
 		size = int(s)
 	}
 	return pgType{
@@ -82,16 +82,16 @@ func pgTypeForParserType(t types.T) pgType {
 
 const secondsInDay = 24 * 60 * 60
 
-func (b *writeBuffer) writeTextDatum(ctx context.Context, d datum.Datum, sessionLoc *time.Location) {
-	log.Debugf("pgwire writing TEXT datum of type: %T, %#v", d, d)
+func (b *writeBuffer) writeTextpgwire(ctx context.Context, d pgwire.Datum, sessionLoc *time.Location) {
+	log.Debugf("pgwire writing TEXT pgwire of type: %T, %#v", d, d)
 
-	if d == datum.DNull {
+	if d == pgwire.DNull {
 		// NULL is encoded as -1; all other values have a length prefix.
 		b.putInt32(-1)
 		return
 	}
 	switch v := d.(type) {
-	case *datum.DBool:
+	case *pgwire.DBool:
 		b.putInt32(1)
 		if *v {
 			b.writeByte('t')
@@ -99,22 +99,22 @@ func (b *writeBuffer) writeTextDatum(ctx context.Context, d datum.Datum, session
 			b.writeByte('f')
 		}
 
-	case *datum.DInt:
+	case *pgwire.DInt:
 		// Start at offset 4 because `putInt32` clobbers the first 4 bytes.
 		s := strconv.AppendInt(b.putbuf[4:4], int64(*v), 10)
 		b.putInt32(int32(len(s)))
 		b.write(s)
 
-	case *datum.DFloat:
+	case *pgwire.DFloat:
 		// Start at offset 4 because `putInt32` clobbers the first 4 bytes.
 		s := strconv.AppendFloat(b.putbuf[4:4], float64(*v), 'f', -1, 64)
 		b.putInt32(int32(len(s)))
 		b.write(s)
 
-	case *datum.DDecimal:
-		b.writeLengthPrefixedDatum(v)
+	case *pgwire.DDecimal:
+		b.writeLengthPrefixedpgwire(v)
 
-	case *datum.DBytes:
+	case *pgwire.DBytes:
 		// http://www.postgresql.org/docs/current/static/datatype-binary.html#AEN5667
 		// Code cribbed from github.com/lib/pq.
 		result := make([]byte, 2+hex.EncodedLen(len(*v)))
@@ -125,55 +125,55 @@ func (b *writeBuffer) writeTextDatum(ctx context.Context, d datum.Datum, session
 		b.putInt32(int32(len(result)))
 		b.write(result)
 
-	case *datum.DUuid:
+	case *pgwire.DUuid:
 		b.writeLengthPrefixedString(v.UUID.String())
 
-	case *datum.DIPAddr:
+	case *pgwire.DIPAddr:
 		b.writeLengthPrefixedString(v.IPAddr.String())
 
-	case *datum.DString:
+	case *pgwire.DString:
 		b.writeLengthPrefixedString(string(*v))
 
-	case *datum.DCollatedString:
+	case *pgwire.DCollatedString:
 		b.writeLengthPrefixedString(v.Contents)
 
-	case *datum.DDate:
+	case *pgwire.DDate:
 		t := timeutil.Unix(int64(*v)*secondsInDay, 0)
 		// Start at offset 4 because `putInt32` clobbers the first 4 bytes.
 		s := formatTs(t, nil, b.putbuf[4:4])
 		b.putInt32(int32(len(s)))
 		b.write(s)
 
-	case *datum.DTime:
+	case *pgwire.DTime:
 		// Start at offset 4 because `putInt32` clobbers the first 4 bytes.
 		s := formatTime(timeofday.TimeOfDay(*v), b.putbuf[4:4])
 		b.putInt32(int32(len(s)))
 		b.write(s)
 
-	case *datum.DTimestamp:
+	case *pgwire.DTimestamp:
 		// Start at offset 4 because `putInt32` clobbers the first 4 bytes.
 		s := formatTs(v.Time, nil, b.putbuf[4:4])
 		b.putInt32(int32(len(s)))
 		b.write(s)
 
-	case *datum.DTimestampTZ:
+	case *pgwire.DTimestampTZ:
 		// Start at offset 4 because `putInt32` clobbers the first 4 bytes.
 		s := formatTs(v.Time, sessionLoc, b.putbuf[4:4])
 		b.putInt32(int32(len(s)))
 		b.write(s)
 
-	case *datum.DInterval:
+	case *pgwire.DInterval:
 		b.writeLengthPrefixedString(v.Duration.String())
-	case *datum.DJSON:
+	case *pgwire.DJSON:
 		b.writeLengthPrefixedString(v.JSON.String())
 
-	case *datum.DTuple:
+	case *pgwire.DTuple:
 		b.variablePutbuf.WriteString("(")
 		for i, d := range v.D {
 			if i > 0 {
 				b.variablePutbuf.WriteString(",")
 			}
-			if d == datum.DNull {
+			if d == pgwire.DNull {
 				// Emit nothing on NULL.
 				continue
 			}
@@ -182,7 +182,7 @@ func (b *writeBuffer) writeTextDatum(ctx context.Context, d datum.Datum, session
 		b.variablePutbuf.WriteString(")")
 		b.writeLengthPrefixedVariablePutbuf()
 
-	case *datum.DArray:
+	case *pgwire.DArray:
 		// Arrays are serialized as a string of comma-separated values, surrounded
 		// by braces.
 		begin, sep, end := "{", ",", "}"
@@ -203,25 +203,25 @@ func (b *writeBuffer) writeTextDatum(ctx context.Context, d datum.Datum, session
 		b.variablePutbuf.WriteString(end)
 		b.writeLengthPrefixedVariablePutbuf()
 
-	case *datum.DOid:
-		b.writeLengthPrefixedDatum(v)
+	case *pgwire.DOid:
+		b.writeLengthPrefixedpgwire(v)
 
 	default:
 		b.setError(errors.Errorf("unsupported type %T", d))
 	}
 }
 
-func (b *writeBuffer) writeBinaryDatum(
-	ctx context.Context, d datum.Datum, sessionLoc *time.Location,
+func (b *writeBuffer) writeBinarypgwire(
+	ctx context.Context, d pgwire.Datum, sessionLoc *time.Location,
 ) {
-	log.Debugf("pgwire writing BINARY datum of type: %T, %#v", d, d)
-	if d == datum.DNull {
+	log.Debugf("pgwire writing BINARY pgwire of type: %T, %#v", d, d)
+	if d == pgwire.DNull {
 		// NULL is encoded as -1; all other values have a length prefix.
 		b.putInt32(-1)
 		return
 	}
 	switch v := d.(type) {
-	case *datum.DBool:
+	case *pgwire.DBool:
 		b.putInt32(1)
 		if *v {
 			b.writeByte(1)
@@ -229,22 +229,22 @@ func (b *writeBuffer) writeBinaryDatum(
 			b.writeByte(0)
 		}
 
-	case *datum.DInt:
+	case *pgwire.DInt:
 		b.putInt32(8)
 		b.putInt64(int64(*v))
 
-	case *datum.DFloat:
+	case *pgwire.DFloat:
 		b.putInt32(8)
 		b.putInt64(int64(math.Float64bits(float64(*v))))
 
-	case *datum.DDecimal:
+	case *pgwire.DDecimal:
 		alloc := struct {
 			pgNum pgNumeric
 
 			bigI big.Int
 		}{
 			pgNum: pgNumeric{
-				// Since we use 2000 as the exponent limits in datum.DecimalCtx, this
+				// Since we use 2000 as the exponent limits in pgwire.DecimalCtx, this
 				// conversion should not overflow.
 				dscale: int16(-v.Exponent),
 			},
@@ -302,15 +302,15 @@ func (b *writeBuffer) writeBinaryDatum(
 			b.putInt16(nextDigit())
 		}
 
-	case *datum.DBytes:
+	case *pgwire.DBytes:
 		b.putInt32(int32(len(*v)))
 		b.write([]byte(*v))
 
-	case *datum.DUuid:
+	case *pgwire.DUuid:
 		b.putInt32(16)
 		b.write(v.GetBytes())
 
-	case *datum.DIPAddr:
+	case *pgwire.DIPAddr:
 		// We calculate the Postgres binary format for an IPAddr. For the spec see,
 		// https://github.com/postgres/postgres/blob/81c5e46c490e2426db243eada186995da5bb0ba7/src/backend/utils/adt/network.c#L144
 		// The pgBinary encoding is as follows:
@@ -345,29 +345,29 @@ func (b *writeBuffer) writeBinaryDatum(
 			b.setError(errors.Errorf("error encoding inet to pgBinary: %v", v.IPAddr))
 		}
 
-	case *datum.DString:
+	case *pgwire.DString:
 		b.writeLengthPrefixedString(string(*v))
 
-	case *datum.DCollatedString:
+	case *pgwire.DCollatedString:
 		b.writeLengthPrefixedString(v.Contents)
 
-	case *datum.DTimestamp:
+	case *pgwire.DTimestamp:
 		b.putInt32(8)
 		b.putInt64(timeToPgBinary(v.Time, nil))
 
-	case *datum.DTimestampTZ:
+	case *pgwire.DTimestampTZ:
 		b.putInt32(8)
 		b.putInt64(timeToPgBinary(v.Time, sessionLoc))
 
-	case *datum.DDate:
+	case *pgwire.DDate:
 		b.putInt32(4)
 		b.putInt32(dateToPgBinary(v))
 
-	case *datum.DTime:
+	case *pgwire.DTime:
 		b.putInt32(8)
 		b.putInt64(int64(*v))
 
-	case *datum.DArray:
+	case *pgwire.DArray:
 		if v.ParamTyp.FamilyEqual(types.AnyArray) {
 			b.setError(errors.New("unsupported binary serialization of multidimensional arrays"))
 			return
@@ -385,10 +385,10 @@ func (b *writeBuffer) writeBinaryDatum(
 		subWriter.putInt32(int32(v.Len()))
 		subWriter.putInt32(int32(v.Len()))
 		for _, elem := range v.Array {
-			subWriter.writeBinaryDatum(ctx, elem, sessionLoc)
+			subWriter.writeBinarypgwire(ctx, elem, sessionLoc)
 		}
 		b.writeLengthPrefixedBuffer(&subWriter.wrapped)
-	case *datum.DOid:
+	case *pgwire.DOid:
 		b.putInt32(4)
 		b.putInt32(int32(v.DInt))
 	default:
@@ -458,7 +458,7 @@ func timeToPgBinary(t time.Time, offset *time.Location) int64 {
 // dateToPgBinary calculates the Postgres binary format for a date. The date is
 // represented as the number of days between the given date and Jan 1, 2000
 // (dubbed the pgEpochJDate), stored within an int32.
-func dateToPgBinary(d *datum.DDate) int32 {
+func dateToPgBinary(d *pgwire.DDate) int32 {
 	return int32(*d) - pgEpochJDateFromUnix
 }
 

@@ -1,4 +1,4 @@
-package basesql
+package pgwire
 
 type StatementTag string
 

@@ -1,4 +1,4 @@
-package datum
+package pgwire
 
 import (
 	"bytes"

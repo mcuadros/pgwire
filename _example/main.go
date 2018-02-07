@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/mcuadros/pgwire"
-	"github.com/mcuadros/pgwire/basesql"
-	"github.com/mcuadros/pgwire/datum"
 	"github.com/mcuadros/pgwire/server"
 	"github.com/mcuadros/pgwire/types"
 	"github.com/xwb1989/sqlparser"
@@ -42,7 +40,7 @@ func (e *executor) ExecuteStatements(s pgwire.Session, rw pgwire.ResultsWriter, 
 
 	defer group.Close()
 	sr := group.NewStatementResult()
-	sr.BeginResult(basesql.Rows, basesql.SELECT)
+	sr.BeginResult(pgwire.Rows, pgwire.SELECT)
 	sr.SetColumns(pgwire.ResultColumns{
 		{Name: "filename", Typ: types.String},
 		{Name: "mode", Typ: types.String},
@@ -70,12 +68,12 @@ func readDirectory(s pgwire.Session, sr pgwire.StatementResult, path string) err
 	}
 
 	for _, file := range files {
-		sr.AddRow(s.Ctx(), []datum.Datum{
-			datum.NewDString(file.Name()),
-			datum.NewDString(file.Mode().String()),
-			datum.NewDInt(file.Size()),
-			datum.NewDTimestamp(file.ModTime(), time.Second),
-			datum.NewDBool(file.IsDir()),
+		sr.AddRow(s.Ctx(), []pgwire.Datum{
+			pgwire.NewDString(file.Name()),
+			pgwire.NewDString(file.Mode().String()),
+			pgwire.NewDInt(file.Size()),
+			pgwire.NewDTimestamp(file.ModTime(), time.Second),
+			pgwire.NewDBool(file.IsDir()),
 		})
 	}
 

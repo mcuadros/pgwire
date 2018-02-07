@@ -24,6 +24,7 @@ import (
 	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/pgerror"
 	"github.com/mcuadros/pgwire/pgwirebase"
+	"github.com/mcuadros/pgwire/server/v3"
 
 	"github.com/pkg/errors"
 )
@@ -297,10 +298,10 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 		// We make a connection before anything. If there is an error
 		// parsing the connection arguments, the connection will only be
 		// used to send a report of that error.
-		v3conn := pgwire.NewV3Conn(conn, s.executor)
+		v3conn := v3.NewConn(conn, s.executor)
 		defer v3conn.Finish(ctx)
 
-		args, err := pgwire.ParseOptions(ctx, buf.Msg)
+		args, err := ParseOptions(ctx, buf.Msg)
 		if err != nil {
 			return v3conn.SendError(pgerror.NewError(pgerror.CodeProtocolViolationError, err.Error()))
 		}

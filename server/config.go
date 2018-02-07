@@ -1,14 +1,18 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"net/url"
 	"sync"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/security"
+	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
+	"github.com/mcuadros/pgwire/pgwirebase"
 	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
 )
 
 // Base config defaults.
@@ -190,4 +194,33 @@ func (cfg *Config) ServerTLSConfig() (*tls.Config, error) {
 
 func didYouMeanInsecureError(err error) error {
 	return errors.Wrap(err, "problem using security settings, did you mean to use --insecure?")
+}
+
+func ParseOptions(ctx context.Context, data []byte) (sql.SessionArgs, error) {
+	args := sql.SessionArgs{}
+	buf := pgwirebase.ReadBuffer{Msg: data}
+	for {
+		key, err := buf.GetString()
+		if err != nil {
+			return sql.SessionArgs{}, errors.Errorf("error reading option key: %s", err)
+		}
+		if len(key) == 0 {
+			break
+		}
+		value, err := buf.GetString()
+		if err != nil {
+			return sql.SessionArgs{}, errors.Errorf("error reading option value: %s", err)
+		}
+		switch key {
+		case "database":
+			args.Database = value
+		case "user":
+			args.User = value
+		case "application_name":
+			args.ApplicationName = value
+		default:
+			log.Warningf("unrecognized configuration parameter %q", key)
+		}
+	}
+	return args, nil
 }
