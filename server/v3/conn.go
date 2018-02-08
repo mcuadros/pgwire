@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/mcuadros/pgwire"
+	"github.com/mcuadros/pgwire/helper"
 	"github.com/mcuadros/pgwire/pgerror"
 
 	"github.com/cockroachdb/cockroach/pkg/security"
@@ -202,20 +203,20 @@ var statusReportParams = map[string]string{
 // name, if different from the one given initially. Note: at this
 // point the sql.Session does not exist yet! If need exists to access the
 // database to look up authentication data, use the internal executor.
-func (c *v3Conn) HandleAuthentication(ctx context.Context, insecure bool) error {
+func (c *v3Conn) HandleAuthentication(ctx context.Context, session pgwire.Session, insecure bool) error {
 	// Check that the requested user exists and retrieve the hashed
 	// password in case password authentication is needed.
 	var err error
-	exists, hashedPassword, err := true, []byte{}, nil
-	//TODO: exists, hashedPassword, err := sql.GetUserHashedPassword(
-	//	ctx, c.executor, c.metrics.internalMemMetrics, c.SessionArgs.User,
-	//)
+	//exists, hashedPassword, err := true, []byte{}, nil
+	exists, hashedPassword, err := helper.GetUserHashedPassword(
+		ctx, c.executor, session.User(),
+	)
 
 	if err != nil {
 		return c.SendError(err)
 	}
 	if !exists {
-		return c.SendError(errors.Errorf("user %s does not exist", c.session.User()))
+		return c.SendError(errors.Errorf("user %s does not exist", session.User()))
 	}
 
 	if tlsConn, ok := c.conn.(*tls.Conn); ok {
@@ -244,7 +245,7 @@ func (c *v3Conn) HandleAuthentication(ctx context.Context, insecure bool) error 
 			}
 		}
 
-		if err := authenticationHook(c.session.User(), true /* public */); err != nil {
+		if err := authenticationHook(session.User(), true /* public */); err != nil {
 			return c.SendError(err)
 		}
 	}

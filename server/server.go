@@ -26,6 +26,7 @@ import (
 	"github.com/mcuadros/pgwire/server/v3"
 
 	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -98,7 +99,11 @@ func (s *Server) Start() error {
 			return err
 		}
 
-		go s.ServeConn(context.TODO(), conn)
+		go func() {
+			if err := s.ServeConn(context.TODO(), conn); err != nil {
+				log.Error(err, conn.Close())
+			}
+		}()
 	}
 }
 
@@ -313,12 +318,11 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 			return v3conn.SendError(pgerror.NewErrorf(pgerror.CodeAdminShutdownError, ErrDraining))
 		}
 
-		//TODO:v3conn.sessionArgs.User = tree.Name(v3conn.sessionArgs.User).Normalize()
-		if err := v3conn.HandleAuthentication(ctx, s.cfg.Insecure); err != nil {
+		session := pgwire.NewSession(ctx, args)
+		if err := v3conn.HandleAuthentication(ctx, session, s.cfg.Insecure); err != nil {
 			return v3conn.SendError(pgerror.NewError(pgerror.CodeInvalidPasswordError, err.Error()))
 		}
 
-		session := pgwire.NewSession(ctx, args)
 		err = v3conn.Serve(ctx, session, s.IsDraining)
 		// If the error that closed the connection is related to an
 		// administrative shutdown, relay that information to the client.

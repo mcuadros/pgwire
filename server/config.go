@@ -30,8 +30,6 @@ type Config struct {
 	// Insecure specifies whether to use SSL or not.
 	// This is really not recommended.
 	Insecure bool
-	// SSLCAKey is used to sign new certs.
-	SSLCAKey string
 	// SSLCertsDir is the path to the certificate/key directory.
 	SSLCertsDir string
 	// User running this process. It could be the user under which
