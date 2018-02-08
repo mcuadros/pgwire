@@ -16,26 +16,21 @@ package v3
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"time"
 
-	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
-
-	"bytes"
-	"io"
-
 	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/pgerror"
 
-	"github.com/cockroachdb/cockroach/pkg/sql"
-	// To move
 	"github.com/cockroachdb/cockroach/pkg/security"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -239,9 +234,9 @@ func (c *v3Conn) HandleAuthentication(ctx context.Context, insecure bool) error 
 			)
 		} else {
 			// Normalize the username contained in the certificate.
-			tlsState.PeerCertificates[0].Subject.CommonName = tree.Name(
+			tlsState.PeerCertificates[0].Subject.CommonName = pgwire.NormalizeName(
 				tlsState.PeerCertificates[0].Subject.CommonName,
-			).Normalize()
+			)
 			var err error
 			authenticationHook, err = security.UserAuthCertHook(insecure, &tlsState)
 			if err != nil {
@@ -312,30 +307,13 @@ func (c *v3Conn) Serve(ctx context.Context, s pgwire.Session, draining func() bo
 	for {
 		if !c.doingExtendedQueryMessage && !c.doNotSendReadyForQuery {
 			c.writeBuf.initMsg(pgwire.ServerMsgReady)
-			var txnStatus byte
-			switch sql.NoTxn { //TODO c.session.TxnState.State() {
-			case sql.Aborted, sql.RestartWait:
-				// We send status "InFailedTransaction" also for state RestartWait
-				// because GO's lib/pq freaks out if we invent a new status.
-				txnStatus = 'E'
-			case sql.Open, sql.AutoRetry:
-				txnStatus = 'T'
-			case sql.NoTxn:
-				// We're not in a txn (i.e. the last txn was committed).
-				txnStatus = 'I'
-			case sql.CommitWait:
-				// We need to lie to pgwire and claim that we're still
-				// in a txn. Otherwise drivers freak out.
-				// This state is not part of the Postgres protocol.
-				txnStatus = 'T'
-			}
 
-			log.Debugf("pgwire: %s: %q", pgwire.ServerMsgReady, txnStatus)
-
-			c.writeBuf.writeByte(txnStatus)
+			// Txn are not support, we always send NoTxn
+			c.writeBuf.writeByte('I')
 			if err := c.writeBuf.finishMsg(c.wr); err != nil {
 				return err
 			}
+
 			// We only flush on every message if not doing an extended query.
 			// If we are, wait for an explicit Flush message. See:
 			// http://www.postgresql.org/docs/current/static/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY.
@@ -551,10 +529,10 @@ func (c *v3Conn) BeginCopyIn(ctx context.Context, columns []pgwire.ResultColumn)
 		c.writeBuf.putInt16(int16(pgwire.FormatText))
 	}
 	if err := c.writeBuf.finishMsg(c.wr); err != nil {
-		return sql.NewWireFailureError(err)
+		return pgwire.NewWireFailureError(err)
 	}
 	if err := c.wr.Flush(); err != nil {
-		return sql.NewWireFailureError(err)
+		return pgwire.NewWireFailureError(err)
 	}
 	return nil
 }
@@ -570,7 +548,7 @@ func (c *v3Conn) SetEmptyQuery() {
 }
 
 func (c *v3Conn) setError(err error) error {
-	if _, isWireFailure := err.(sql.WireFailureError); isWireFailure {
+	if _, isWireFailure := err.(pgwire.WireFailureError); isWireFailure {
 		return err
 	}
 
@@ -583,10 +561,10 @@ func (c *v3Conn) setError(err error) error {
 	state.err = err
 	state.buf.Truncate(0)
 	if err := c.flush(true /* forceSend */); err != nil {
-		return sql.NewWireFailureError(err)
+		return pgwire.NewWireFailureError(err)
 	}
 	if err := c.SendError(err); err != nil {
-		return sql.NewWireFailureError(err)
+		return pgwire.NewWireFailureError(err)
 	}
 	return nil
 }
@@ -611,7 +589,7 @@ func (c *v3Conn) done() error {
 	}
 
 	if err != nil {
-		return sql.NewWireFailureError(err)
+		return pgwire.NewWireFailureError(err)
 	}
 	return nil
 }
@@ -628,10 +606,10 @@ func (c *v3Conn) flush(forceSend bool) error {
 	if forceSend || state.buf.Len() > connResultsBufferSizeBytes {
 		state.hasSentResults = true
 		if _, err := state.buf.WriteTo(c.wr); err != nil {
-			return sql.NewWireFailureError(err)
+			return pgwire.NewWireFailureError(err)
 		}
 		if err := c.wr.Flush(); err != nil {
-			return sql.NewWireFailureError(err)
+			return pgwire.NewWireFailureError(err)
 		}
 	}
 

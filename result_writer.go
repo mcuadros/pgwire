@@ -1,5 +1,21 @@
 package pgwire
 
+import "fmt"
+
+// WireFailureError is used when sending data over pgwire fails.
+type WireFailureError struct {
+	err error
+}
+
+func (e WireFailureError) Error() string {
+	return fmt.Sprintf("WireFailureError: %s", e.err.Error())
+}
+
+// NewWireFailureError returns a new WireFailureError which wraps err.
+func NewWireFailureError(err error) error {
+	return WireFailureError{err}
+}
+
 // ResultsWriter is the interface used to by the Executor to produce results for
 // query execution for a SQL client. The main implementer is v3Conn, which
 // streams the results on a SQL network connection. There's also bufferedWriter,
