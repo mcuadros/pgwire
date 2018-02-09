@@ -3,7 +3,6 @@ package helper
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/mcuadros/pgwire"
 )
 
@@ -12,7 +11,7 @@ import (
 func GetUserHashedPassword(ctx context.Context, executor pgwire.Executor, username string) (bool, []byte, error) {
 	normalizedUsername := pgwire.NormalizeName(username)
 	// Always return no password for the root user, even if someone manually inserts one.
-	if normalizedUsername == security.RootUser {
+	if normalizedUsername == "root" {
 		return true, nil, nil
 	}
 

@@ -279,11 +279,11 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 			if _, err := conn.Write(sslSupported); err != nil {
 				return err
 			}
-			tlsConfig, err := s.cfg.ServerTLSConfig()
-			if err != nil {
-				return err
-			}
-			conn = tls.Server(conn, tlsConfig)
+			//tlsConfig, err := s.cfg.ServerTLSConfig()
+			//if err != nil {
+			//	return err
+			//}
+			conn = tls.Server(conn, nil)
 		}
 
 		_, err := buf.ReadUntypedMsg(conn)

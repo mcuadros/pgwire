@@ -30,7 +30,6 @@ import (
 	"github.com/mcuadros/pgwire/pgerror"
 	"gopkg.in/sqle/sqle.v0/sql"
 
-	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 )
@@ -209,7 +208,7 @@ func (c *v3Conn) HandleAuthentication(ctx context.Context, session pgwire.Sessio
 	// password in case password authentication is needed.
 	var err error
 	//exists, hashedPassword, err := true, []byte{}, nil
-	exists, hashedPassword, err := helper.GetUserHashedPassword(
+	exists, _, err := helper.GetUserHashedPassword(
 		ctx, c.executor, session.User(),
 	)
 
@@ -220,35 +219,8 @@ func (c *v3Conn) HandleAuthentication(ctx context.Context, session pgwire.Sessio
 		return c.SendError(errors.Errorf("user %s does not exist", session.User()))
 	}
 
-	if tlsConn, ok := c.conn.(*tls.Conn); ok {
-		var authenticationHook security.UserAuthHook
-
-		tlsState := tlsConn.ConnectionState()
-		// If no certificates are provided, default to password
-		// authentication.
-		if len(tlsState.PeerCertificates) == 0 {
-			password, err := c.sendAuthPasswordRequest()
-			if err != nil {
-				return c.SendError(err)
-			}
-			authenticationHook = security.UserAuthPasswordHook(
-				insecure, password, hashedPassword,
-			)
-		} else {
-			// Normalize the username contained in the certificate.
-			tlsState.PeerCertificates[0].Subject.CommonName = pgwire.NormalizeName(
-				tlsState.PeerCertificates[0].Subject.CommonName,
-			)
-			var err error
-			authenticationHook, err = security.UserAuthCertHook(insecure, &tlsState)
-			if err != nil {
-				return c.SendError(err)
-			}
-		}
-
-		if err := authenticationHook(session.User(), true /* public */); err != nil {
-			return c.SendError(err)
-		}
+	if _, ok := c.conn.(*tls.Conn); ok {
+		c.SendError(errors.Errorf("TLS connections not supported"))
 	}
 
 	c.writeBuf.initMsg(pgwire.ServerMsgAuth)
@@ -483,22 +455,12 @@ func (c *v3Conn) SendError(err error) error {
 		c.writeBuf.writeTerminatedString(pgErr.Hint)
 	}
 
-	if ok && pgErr.Source != nil {
-		errCtx := pgErr.Source
-		if errCtx.File != "" {
-			c.writeBuf.putErrFieldMsg(pgwire.ServerErrFieldSrcFile)
-			c.writeBuf.writeTerminatedString(errCtx.File)
-		}
-
-		if errCtx.Line > 0 {
-			c.writeBuf.putErrFieldMsg(pgwire.ServerErrFieldSrcLine)
-			c.writeBuf.writeTerminatedString(strconv.Itoa(int(errCtx.Line)))
-		}
-
-		if errCtx.Function != "" {
-			c.writeBuf.putErrFieldMsg(pgwire.ServerErrFieldSrcFunction)
-			c.writeBuf.writeTerminatedString(errCtx.Function)
-		}
+	if ok && pgErr.StackTrace != nil {
+		file, line := pgErr.StackTrace.FileLine()
+		c.writeBuf.putErrFieldMsg(pgwire.ServerErrFieldSrcFile)
+		c.writeBuf.writeTerminatedString(file)
+		c.writeBuf.putErrFieldMsg(pgwire.ServerErrFieldSrcLine)
+		c.writeBuf.writeTerminatedString(strconv.Itoa(line))
 	}
 
 	c.writeBuf.putErrFieldMsg(pgwire.ServerErrFieldMsgPrimary)
