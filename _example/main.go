@@ -5,11 +5,11 @@ import (
 	"io/ioutil"
 	"time"
 
+	"gopkg.in/sqle/sqle.v0/sql"
+	"gopkg.in/sqle/vitess-go.v2/vt/sqlparser"
+
 	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/server"
-	"gopkg.in/sqle/sqle.v0/sql"
-
-	"github.com/xwb1989/sqlparser"
 )
 
 func main() {
