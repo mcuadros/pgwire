@@ -7,7 +7,8 @@ import (
 
 	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/server"
-	"github.com/mcuadros/pgwire/types"
+	"gopkg.in/sqle/sqle.v0/sql"
+
 	"github.com/xwb1989/sqlparser"
 )
 
@@ -41,12 +42,12 @@ func (e *executor) ExecuteStatements(s pgwire.Session, rw pgwire.ResultsWriter, 
 	defer group.Close()
 	sr := group.NewStatementResult()
 	sr.BeginResult(pgwire.Rows, pgwire.SELECT)
-	sr.SetColumns(pgwire.ResultColumns{
-		{Name: "filename", Typ: types.String},
-		{Name: "mode", Typ: types.String},
-		{Name: "size", Typ: types.Int},
-		{Name: "mod_time", Typ: types.Timestamp},
-		{Name: "is_dir", Typ: types.Bool},
+	sr.SetColumns(sql.Schema{
+		{Name: "filename", Type: sql.String},
+		{Name: "mode", Type: sql.String},
+		{Name: "size", Type: sql.Integer},
+		{Name: "mod_time", Type: sql.Timestamp},
+		{Name: "is_dir", Type: sql.Boolean},
 	})
 
 	for _, path := range getTableNames(sel) {

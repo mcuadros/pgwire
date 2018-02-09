@@ -2,6 +2,8 @@ package pgwire
 
 import (
 	"context"
+
+	"gopkg.in/sqle/sqle.v0/sql"
 )
 
 // StatementResult is used to produce results for a single query (see
@@ -18,7 +20,7 @@ type StatementResult interface {
 	StatementType() StatementType
 	// SetColumns should be called after BeginResult and before AddRow if the
 	// StatementType is tree.Rows.
-	SetColumns(columns ResultColumns)
+	SetColumns(columns sql.Schema)
 	// AddRow takes the passed in row and adds it to the current result.
 	AddRow(ctx context.Context, row Datums) error
 	// IncrementRowsAffected increments a counter by n. This is used for all

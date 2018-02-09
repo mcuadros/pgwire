@@ -19,16 +19,14 @@ import (
 	"encoding/hex"
 	"math"
 	"math/big"
-	"net"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mcuadros/pgwire"
-	"github.com/mcuadros/pgwire/types"
+	"gopkg.in/sqle/sqle.v0/sql"
 
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
-	"github.com/cockroachdb/cockroach/pkg/util/ipaddr"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 
@@ -69,15 +67,35 @@ type pgNumeric struct {
 	sign                    pgNumericSign
 }
 
-func pgTypeForParserType(t types.T) pgType {
+func pgTypeForParserType(t sql.Type) pgType {
 	size := -1
 	if s, variable := pgwire.DatumTypeSize(t); !variable {
 		size = int(s)
 	}
+
+	o, ok := mappingTypeToOid[t]
+	if !ok {
+		o = oid.T_unknown
+	}
+
 	return pgType{
-		oid:  t.Oid(),
+		oid:  o,
 		size: size,
 	}
+}
+
+var mappingTypeToOid = map[sql.Type]oid.Oid{
+	sql.Boolean:               oid.T_bool,
+	sql.Integer:               oid.T_int8,
+	sql.Float:                 oid.T_float8,
+	sql.Decimal:               oid.T_numeric,
+	sql.String:                oid.T_text,
+	sql.Blob:                  oid.T_bytea,
+	sql.Date:                  oid.T_date,
+	sql.Time:                  oid.T_time,
+	sql.Timestamp:             oid.T_timestamp,
+	sql.TimestampWithTimezone: oid.T_timestamptz,
+	sql.Interval:              oid.T_interval,
 }
 
 const secondsInDay = 24 * 60 * 60
@@ -125,12 +143,6 @@ func (b *writeBuffer) writeTextpgwire(ctx context.Context, d pgwire.Datum, sessi
 		b.putInt32(int32(len(result)))
 		b.write(result)
 
-	case *pgwire.DUuid:
-		b.writeLengthPrefixedString(v.UUID.String())
-
-	case *pgwire.DIPAddr:
-		b.writeLengthPrefixedString(v.IPAddr.String())
-
 	case *pgwire.DString:
 		b.writeLengthPrefixedString(string(*v))
 
@@ -166,45 +178,6 @@ func (b *writeBuffer) writeTextpgwire(ctx context.Context, d pgwire.Datum, sessi
 		b.writeLengthPrefixedString(v.Duration.String())
 	case *pgwire.DJSON:
 		b.writeLengthPrefixedString(v.JSON.String())
-
-	case *pgwire.DTuple:
-		b.variablePutbuf.WriteString("(")
-		for i, d := range v.D {
-			if i > 0 {
-				b.variablePutbuf.WriteString(",")
-			}
-			if d == pgwire.DNull {
-				// Emit nothing on NULL.
-				continue
-			}
-			d.Format(&b.variablePutbuf)
-		}
-		b.variablePutbuf.WriteString(")")
-		b.writeLengthPrefixedVariablePutbuf()
-
-	case *pgwire.DArray:
-		// Arrays are serialized as a string of comma-separated values, surrounded
-		// by braces.
-		begin, sep, end := "{", ",", "}"
-
-		if d.ResolvedType().Oid() == oid.T_int2vector {
-			// int2vectors are serialized as a string of space-separated values.
-			begin, sep, end = "", " ", ""
-		}
-
-		b.variablePutbuf.WriteString(begin)
-		for i, d := range v.Array {
-			if i > 0 {
-				b.variablePutbuf.WriteString(sep)
-			}
-			// TODO(justin): add a test for nested arrays.
-			d.Format(&b.variablePutbuf)
-		}
-		b.variablePutbuf.WriteString(end)
-		b.writeLengthPrefixedVariablePutbuf()
-
-	case *pgwire.DOid:
-		b.writeLengthPrefixedpgwire(v)
 
 	default:
 		b.setError(errors.Errorf("unsupported type %T", d))
@@ -306,45 +279,6 @@ func (b *writeBuffer) writeBinarypgwire(
 		b.putInt32(int32(len(*v)))
 		b.write([]byte(*v))
 
-	case *pgwire.DUuid:
-		b.putInt32(16)
-		b.write(v.GetBytes())
-
-	case *pgwire.DIPAddr:
-		// We calculate the Postgres binary format for an IPAddr. For the spec see,
-		// https://github.com/postgres/postgres/blob/81c5e46c490e2426db243eada186995da5bb0ba7/src/backend/utils/adt/network.c#L144
-		// The pgBinary encoding is as follows:
-		//  The int32 length of the following bytes.
-		//  The family byte.
-		//  The mask size byte.
-		//  A 0 byte for is_cidr. It's ignored on the postgres frontend.
-		//  The length of our IP bytes.
-		//  The IP bytes.
-		const pgIPAddrBinaryHeaderSize = 4
-		if v.Family == ipaddr.IPv4family {
-			b.putInt32(net.IPv4len + pgIPAddrBinaryHeaderSize)
-			b.writeByte(pgBinaryIPv4family)
-			b.writeByte(v.Mask)
-			b.writeByte(0)
-			b.writeByte(byte(net.IPv4len))
-			err := v.Addr.WriteIPv4Bytes(b)
-			if err != nil {
-				b.setError(err)
-			}
-		} else if v.Family == ipaddr.IPv6family {
-			b.putInt32(net.IPv6len + pgIPAddrBinaryHeaderSize)
-			b.writeByte(pgBinaryIPv6family)
-			b.writeByte(v.Mask)
-			b.writeByte(0)
-			b.writeByte(byte(net.IPv6len))
-			err := v.Addr.WriteIPv6Bytes(b)
-			if err != nil {
-				b.setError(err)
-			}
-		} else {
-			b.setError(errors.Errorf("error encoding inet to pgBinary: %v", v.IPAddr))
-		}
-
 	case *pgwire.DString:
 		b.writeLengthPrefixedString(string(*v))
 
@@ -367,30 +301,6 @@ func (b *writeBuffer) writeBinarypgwire(
 		b.putInt32(8)
 		b.putInt64(int64(*v))
 
-	case *pgwire.DArray:
-		if v.ParamTyp.FamilyEqual(types.AnyArray) {
-			b.setError(errors.New("unsupported binary serialization of multidimensional arrays"))
-			return
-		}
-		// TODO(andrei): We shouldn't be allocating a new buffer for every array.
-		subWriter := newWriteBuffer()
-		// Put the number of dimensions. We currently support 1d arrays only.
-		subWriter.putInt32(1)
-		hasNulls := 0
-		if v.HasNulls {
-			hasNulls = 1
-		}
-		subWriter.putInt32(int32(hasNulls))
-		subWriter.putInt32(int32(v.ParamTyp.Oid()))
-		subWriter.putInt32(int32(v.Len()))
-		subWriter.putInt32(int32(v.Len()))
-		for _, elem := range v.Array {
-			subWriter.writeBinarypgwire(ctx, elem, sessionLoc)
-		}
-		b.writeLengthPrefixedBuffer(&subWriter.wrapped)
-	case *pgwire.DOid:
-		b.putInt32(4)
-		b.putInt32(int32(v.DInt))
 	default:
 		b.setError(errors.Errorf("unsupported type %T", d))
 	}

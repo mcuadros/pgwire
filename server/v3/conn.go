@@ -28,6 +28,7 @@ import (
 	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/helper"
 	"github.com/mcuadros/pgwire/pgerror"
+	"gopkg.in/sqle/sqle.v0/sql"
 
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/pkg/errors"
@@ -136,7 +137,7 @@ type streamingState struct {
 	// bytes and write them to buf. We do this since we need to length prefix
 	// each message and this is icky to figure out ahead of time.
 	buf           bytes.Buffer
-	columns       pgwire.ResultColumns
+	columns       sql.Schema
 	pgTag         pgwire.StatementTag
 	statementType pgwire.StatementType
 	rowsAffected  int
@@ -522,7 +523,7 @@ func (c *v3Conn) sendNoData(w io.Writer) error {
 }
 
 // BeginCopyIn is part of the pgwire.Conn interface.
-func (c *v3Conn) BeginCopyIn(ctx context.Context, columns []pgwire.ResultColumn) error {
+func (c *v3Conn) BeginCopyIn(ctx context.Context, columns []sql.Column) error {
 	c.writeBuf.initMsg(pgwire.ServerMsgCopyInResponse)
 	c.writeBuf.writeByte(byte(pgwire.FormatText))
 	c.writeBuf.putInt16(int16(len(columns)))

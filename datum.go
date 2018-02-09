@@ -23,16 +23,14 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/mcuadros/pgwire/types"
+	"gopkg.in/sqle/sqle.v0/sql"
 
 	"github.com/cockroachdb/apd"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
-	"github.com/cockroachdb/cockroach/pkg/util/ipaddr"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
 	"github.com/cockroachdb/cockroach/pkg/util/stringencoding"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"golang.org/x/text/collate"
 	"golang.org/x/text/language"
 )
@@ -59,7 +57,7 @@ var (
 type Datum interface {
 	// ResolvedType provides the type of the TypedExpr, which is the type of Datum
 	// that the TypedExpr will return when evaluated.
-	ResolvedType() types.T
+	ResolvedType() sql.Type
 	// It holds for every Datum d that d.Size().
 	Size() uintptr
 	// Format performs pretty-printing towards a bytes buffer.
@@ -91,8 +89,8 @@ func NewDBool(d bool) *DBool {
 }
 
 // ResolvedType implements the TypedExpr interface.
-func (*DBool) ResolvedType() types.T {
-	return types.Bool
+func (*DBool) ResolvedType() sql.Type {
+	return sql.Boolean
 }
 
 // Size implements the Datum interface.
@@ -115,8 +113,8 @@ func NewDInt(v int64) *DInt {
 }
 
 // ResolvedType implements the TypedExpr interface.
-func (*DInt) ResolvedType() types.T {
-	return types.Int
+func (*DInt) ResolvedType() sql.Type {
+	return sql.Integer
 }
 
 // Size implements the Datum interface.
@@ -139,8 +137,8 @@ func NewDFloat(d float64) *DFloat {
 }
 
 // ResolvedType implements the TypedExpr interface.
-func (*DFloat) ResolvedType() types.T {
-	return types.Float
+func (*DFloat) ResolvedType() sql.Type {
+	return sql.Float
 }
 
 // Size implements the Datum interface.
@@ -171,8 +169,8 @@ func ParseDDecimal(s string) (*DDecimal, error) {
 }
 
 // ResolvedType implements the TypedExpr interface.
-func (*DDecimal) ResolvedType() types.T {
-	return types.Decimal
+func (*DDecimal) ResolvedType() sql.Type {
+	return sql.Decimal
 }
 
 // Size implements the Datum interface.
@@ -197,8 +195,8 @@ func NewDString(d string) *DString {
 }
 
 // ResolvedType implements the TypedExpr interface.
-func (*DString) ResolvedType() types.T {
-	return types.String
+func (*DString) ResolvedType() sql.Type {
+	return sql.String
 }
 
 // Size implements the Datum interface.
@@ -262,8 +260,9 @@ func NewDCollatedString(
 }
 
 // ResolvedType implements the TypedExpr interface.
-func (d *DCollatedString) ResolvedType() types.T {
-	return types.TCollatedString{Locale: d.Locale}
+func (d *DCollatedString) ResolvedType() sql.Type {
+	return sql.String
+	//return types.TCollatedString{Locale: d.Locale}
 }
 
 // Size implements the Datum interface.
@@ -289,8 +288,8 @@ func NewDBytes(d string) *DBytes {
 }
 
 // ResolvedType implements the TypedExpr interface.
-func (*DBytes) ResolvedType() types.T {
-	return types.Bytes
+func (*DBytes) ResolvedType() sql.Type {
+	return sql.Blob
 }
 
 // Size implements the Datum interface.
@@ -307,58 +306,6 @@ func (d *DBytes) Format(w *bytes.Buffer) {
 		w.Write(stringencoding.RawHexMap[b[i]])
 	}
 	w.WriteByte('\'')
-}
-
-// DUuid is the UUID Datum.
-type DUuid struct {
-	uuid.UUID
-}
-
-// NewDUuid is a helper routine to create a *DUuid initialized from its
-// argument.
-func NewDUuid(d DUuid) *DUuid {
-	return &d
-}
-
-// ResolvedType implements the TypedExpr interface.
-func (*DUuid) ResolvedType() types.T {
-	return types.UUID
-}
-
-// Size implements the Datum interface.
-func (d *DUuid) Size() uintptr {
-	return unsafe.Sizeof(*d)
-}
-
-// Format implements the NodeFormatter interface.
-func (d *DUuid) Format(w *bytes.Buffer) {
-	w.WriteString(d.UUID.String())
-}
-
-// DIPAddr is the IPAddr Datum.
-type DIPAddr struct {
-	ipaddr.IPAddr
-}
-
-// NewDIPAddr is a helper routine to create a *DIPAddr initialized from its
-// argument.
-func NewDIPAddr(d DIPAddr) *DIPAddr {
-	return &d
-}
-
-// ResolvedType implements the TypedExpr interface.
-func (*DIPAddr) ResolvedType() types.T {
-	return types.INet
-}
-
-// Size implements the Datum interface.
-func (d *DIPAddr) Size() uintptr {
-	return unsafe.Sizeof(*d)
-}
-
-// Format implements the NodeFormatter interface.
-func (d *DIPAddr) Format(w *bytes.Buffer) {
-	w.WriteString(d.IPAddr.String())
 }
 
 // DDate is the date Datum represented as the number of days after
@@ -384,8 +331,8 @@ func NewDDateFromTime(t time.Time, loc *time.Location) *DDate {
 }
 
 // ResolvedType implements the TypedExpr interface.
-func (*DDate) ResolvedType() types.T {
-	return types.Date
+func (*DDate) ResolvedType() sql.Type {
+	return sql.Date
 }
 
 // Size implements the Datum interface.
@@ -411,8 +358,8 @@ func MakeDTime(t timeofday.TimeOfDay) *DTime {
 }
 
 // ResolvedType implements the TypedExpr interface.
-func (*DTime) ResolvedType() types.T {
-	return types.Time
+func (*DTime) ResolvedType() sql.Type {
+	return sql.Time
 }
 
 // Size implements the Datum interface.
@@ -438,8 +385,8 @@ func NewDTimestamp(t time.Time, precision time.Duration) *DTimestamp {
 }
 
 // ResolvedType implements the TypedExpr interface.
-func (*DTimestamp) ResolvedType() types.T {
-	return types.Timestamp
+func (*DTimestamp) ResolvedType() sql.Type {
+	return sql.Timestamp
 }
 
 // Size implements the Datum interface.
@@ -472,8 +419,8 @@ func MakeDTimestampTZFromDate(loc *time.Location, d *DDate) *DTimestampTZ {
 }
 
 // ResolvedType implements the TypedExpr interface.
-func (*DTimestampTZ) ResolvedType() types.T {
-	return types.TimestampTZ
+func (*DTimestampTZ) ResolvedType() sql.Type {
+	return sql.TimestampWithTimezone
 }
 
 // Size implements the Datum interface.
@@ -497,8 +444,8 @@ type DInterval struct {
 type DurationField int
 
 // ResolvedType implements the TypedExpr interface.
-func (*DInterval) ResolvedType() types.T {
-	return types.Interval
+func (*DInterval) ResolvedType() sql.Type {
+	return sql.Interval
 }
 
 // Size implements the Datum interface.
@@ -538,8 +485,8 @@ func MakeDJSON(d interface{}) (Datum, error) {
 }
 
 // ResolvedType implements the TypedExpr interface.
-func (*DJSON) ResolvedType() types.T {
-	return types.JSON
+func (*DJSON) ResolvedType() sql.Type {
+	return sql.String
 }
 
 // Size implements the Datum interface.
@@ -556,58 +503,11 @@ func (d *DJSON) Format(w *bytes.Buffer) {
 	EncodeSQLString(w, s)
 }
 
-// DTuple is the tuple Datum.
-type DTuple struct {
-	D Datums
-
-	Sorted bool
-}
-
-// NewDTuple creates a *DTuple with the provided datums. When creating a new
-// DTuple with Datums that are known to be sorted in ascending order, chain
-// this call with DTuple.SetSorted.
-func NewDTuple(d ...Datum) *DTuple {
-	return &DTuple{D: d}
-}
-
-// NewDTupleWithLen creates a *DTuple with the provided length.
-func NewDTupleWithLen(l int) *DTuple {
-	return &DTuple{D: make(Datums, l)}
-}
-
-// NewDTupleWithCap creates a *DTuple with the provided capacity.
-func NewDTupleWithCap(c int) *DTuple {
-	return &DTuple{D: make(Datums, 0, c)}
-}
-
-// ResolvedType implements the TypedExpr interface.
-func (d *DTuple) ResolvedType() types.T {
-	typ := make(types.TTuple, len(d.D))
-	for i, v := range d.D {
-		typ[i] = v.ResolvedType()
-	}
-	return typ
-}
-
-// Size implements the Datum interface.
-func (d *DTuple) Size() uintptr {
-	sz := unsafe.Sizeof(*d)
-	for _, e := range d.D {
-		dsz := e.Size()
-		sz += dsz
-	}
-	return sz
-}
-
-func (d *DTuple) Format(w *bytes.Buffer) {
-	//TODO: w.FormatNode(&d.D)
-}
-
 type dNull struct{}
 
 // ResolvedType implements the TypedExpr interface.
-func (dNull) ResolvedType() types.T {
-	return types.Null
+func (dNull) ResolvedType() sql.Type {
+	return sql.Null
 }
 
 // Size implements the Datum interface.
@@ -619,78 +519,6 @@ func (dNull) Format(w *bytes.Buffer) {
 	w.WriteString("NULL")
 }
 
-// DArray is the array Datum. Any Datum inserted into a DArray are treated as
-// text during serialization.
-type DArray struct {
-	ParamTyp types.T
-	Array    Datums
-	// HasNulls is set to true if any of the datums within the array are null.
-	// This is used in the binary array serialization format.
-	HasNulls bool
-}
-
-// NewDArray returns a DArray containing elements of the specified type.
-func NewDArray(paramTyp types.T) *DArray {
-	return &DArray{ParamTyp: paramTyp}
-}
-
-// ResolvedType implements the TypedExpr interface.
-func (d *DArray) ResolvedType() types.T {
-	return types.TArray{Typ: d.ParamTyp}
-}
-
-// Len returns the length of the Datum array.
-func (d *DArray) Len() int {
-	return len(d.Array)
-}
-
-// Size implements the Datum interface.
-func (d *DArray) Size() uintptr {
-	sz := unsafe.Sizeof(*d)
-	for _, e := range d.Array {
-		dsz := e.Size()
-		sz += dsz
-	}
-	return sz
-}
-
-func (d *DArray) Format(w *bytes.Buffer) {
-	w.WriteString("ARRAY[")
-	for i, v := range d.Array {
-		if i > 0 {
-			w.WriteString(",")
-		}
-		v.Format(w)
-	}
-	w.WriteByte(']')
-}
-
-// DOid is the Postgres OID datum. It can represent either an OID type or any
-// of the reg* types, such as regproc or regclass.
-type DOid struct {
-	// A DOid embeds a DInt, the underlying integer OID for this OID datum.
-	DInt
-	// name is set to the resolved name of this OID, if available.
-	name string
-}
-
-// NewDOid is a helper routine to create a DOid initialized from a int64.
-func NewDOid(v int64) *DOid {
-	return &DOid{DInt: DInt(v), name: ""}
-}
-
-// ResolvedType implements the Datum interface.
-func (d *DOid) ResolvedType() types.T {
-	return types.Oid
-}
-
-// Size implements the Datum interface.
-func (d *DOid) Size() uintptr { return unsafe.Sizeof(*d) }
-
-func (d *DOid) Format(w *bytes.Buffer) {
-	d.DInt.Format(w)
-}
-
 // DatumTypeSize returns a lower bound on the total size of a Datum
 // of the given type in bytes, including memory that is
 // pointed at (even if shared between Datum instances) but excluding
@@ -700,40 +528,7 @@ func (d *DOid) Format(w *bytes.Buffer) {
 // sizes.
 //
 // It holds for every Datum d that d.Size() >= DatumSize(d.ResolvedType())
-func DatumTypeSize(t types.T) (uintptr, bool) {
-	// The following are composite types.
-	switch ty := t.(type) {
-	case types.TOid:
-		// Note: we have multiple Type instances of tOid (TypeOid,
-		// TypeRegClass, etc). Instead of listing all of them in
-		// baseDatumTypeSizes below, we use a single case here.
-		return unsafe.Sizeof(DInt(0)), fixedSize
-
-	case types.TOidWrapper:
-		return DatumTypeSize(ty.T)
-
-	case types.TCollatedString:
-		return unsafe.Sizeof(DCollatedString{"", "", nil}), variableSize
-
-	case types.TTuple:
-		sz := uintptr(0)
-		variable := false
-		for _, typ := range ty {
-			typsz, typvariable := DatumTypeSize(typ)
-			sz += typsz
-			variable = variable || typvariable
-		}
-		return sz, variable
-
-	case types.TTable:
-		sz, _ := DatumTypeSize(ty.Cols)
-		return sz, variableSize
-
-	case types.TArray:
-		// TODO(jordan,justin): This seems suspicious.
-		return unsafe.Sizeof(DString("")), variableSize
-	}
-
+func DatumTypeSize(t sql.Type) (uintptr, bool) {
 	// All the primary types have fixed size information.
 	if bSzInfo, ok := baseDatumTypeSizes[t]; ok {
 		return bSzInfo.sz, bSzInfo.variable
@@ -747,25 +542,27 @@ const (
 	variableSize = true
 )
 
-var baseDatumTypeSizes = map[types.T]struct {
+var baseDatumTypeSizes = map[sql.Type]struct {
 	sz       uintptr
 	variable bool
 }{
-	types.Null:        {unsafe.Sizeof(dNull{}), fixedSize},
-	types.Bool:        {unsafe.Sizeof(DBool(false)), fixedSize},
-	types.Int:         {unsafe.Sizeof(DInt(0)), fixedSize},
-	types.Float:       {unsafe.Sizeof(DFloat(0.0)), fixedSize},
-	types.Decimal:     {unsafe.Sizeof(DDecimal{}), variableSize},
-	types.String:      {unsafe.Sizeof(DString("")), variableSize},
-	types.Bytes:       {unsafe.Sizeof(DBytes("")), variableSize},
-	types.Date:        {unsafe.Sizeof(DDate(0)), fixedSize},
-	types.Time:        {unsafe.Sizeof(DTime(0)), fixedSize},
-	types.Timestamp:   {unsafe.Sizeof(DTimestamp{}), fixedSize},
-	types.TimestampTZ: {unsafe.Sizeof(DTimestampTZ{}), fixedSize},
-	types.Interval:    {unsafe.Sizeof(DInterval{}), fixedSize},
-	types.JSON:        {unsafe.Sizeof(DJSON{}), variableSize},
-	types.UUID:        {unsafe.Sizeof(DUuid{}), fixedSize},
-	types.INet:        {unsafe.Sizeof(DIPAddr{}), fixedSize},
+	sql.Null:                  {unsafe.Sizeof(dNull{}), fixedSize},
+	sql.Boolean:               {unsafe.Sizeof(DBool(false)), fixedSize},
+	sql.Integer:               {unsafe.Sizeof(DInt(0)), fixedSize},
+	sql.Float:                 {unsafe.Sizeof(DFloat(0.0)), fixedSize},
+	sql.Decimal:               {unsafe.Sizeof(DDecimal{}), variableSize},
+	sql.String:                {unsafe.Sizeof(DString("")), variableSize},
+	sql.Blob:                  {unsafe.Sizeof(DBytes("")), variableSize},
+	sql.Date:                  {unsafe.Sizeof(DDate(0)), fixedSize},
+	sql.Time:                  {unsafe.Sizeof(DTime(0)), fixedSize},
+	sql.Timestamp:             {unsafe.Sizeof(DTimestamp{}), fixedSize},
+	sql.TimestampWithTimezone: {unsafe.Sizeof(DTimestampTZ{}), fixedSize},
+	sql.Interval:              {unsafe.Sizeof(DInterval{}), fixedSize},
+
+	//TODO
+	//types.JSON:                {unsafe.Sizeof(DJSON{}), variableSize},
+	//types.UUID:                {unsafe.Sizeof(DUuid{}), fixedSize},
+	//types.INet:                {unsafe.Sizeof(DIPAddr{}), fixedSize},
 	// TODO(jordan,justin): This seems suspicious.
-	types.Any: {unsafe.Sizeof(DString("")), variableSize},
+	//types.Any: {unsafe.Sizeof(DString("")), variableSize},
 }

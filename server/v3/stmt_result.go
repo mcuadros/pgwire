@@ -8,6 +8,7 @@ import (
 
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/sqle/sqle.v0/sql"
 
 	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/pgerror"
@@ -41,7 +42,7 @@ func (r *statementResult) StatementType() pgwire.StatementType {
 	return r.state.statementType
 }
 
-func (r *statementResult) SetColumns(columns pgwire.ResultColumns) {
+func (r *statementResult) SetColumns(columns sql.Schema) {
 	r.state.columns = columns
 }
 
@@ -176,17 +177,17 @@ func (r *statementResult) sendCommandComplete(tag []byte, w io.Writer) error {
 // slice of columns.
 func (r *statementResult) sendRowDescription(
 	ctx context.Context,
-	columns []pgwire.ResultColumn,
+	columns []*sql.Column,
 	formatCodes []pgwire.FormatCode,
 	w io.Writer,
 ) error {
 	r.conn.writeBuf.initMsg(pgwire.ServerMsgRowDescription)
 	r.conn.writeBuf.putInt16(int16(len(columns)))
 	for i, column := range columns {
-		log.Debugf("pgwire: writing column %s of type: %T", column.Name, column.Typ)
+		log.Debugf("pgwire: writing column %s of type: %T", column.Name, column.Type)
 		r.conn.writeBuf.writeTerminatedString(column.Name)
 
-		typ := pgTypeForParserType(column.Typ)
+		typ := pgTypeForParserType(column.Type)
 		r.conn.writeBuf.putInt32(0) // Table OID (optional).
 		r.conn.writeBuf.putInt16(0) // Column attribute ID (optional).
 		r.conn.writeBuf.putInt32(int32(typ.oid))
