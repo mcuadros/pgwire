@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"database/sql/driver"
 	"fmt"
 	"io"
 	"net"
@@ -28,10 +29,10 @@ import (
 	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/helper"
 	"github.com/mcuadros/pgwire/pgerror"
-	"gopkg.in/sqle/sqle.v0/sql"
 
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/sqle/sqle.v0/sql"
 )
 
 const (
@@ -94,10 +95,11 @@ func (c *readTimeoutConn) Read(b []byte) (int, error) {
 }
 
 type v3Conn struct {
-	conn     net.Conn
+	conn    net.Conn
+	sqlConn driver.Conn
+
 	rd       *bufio.Reader
 	wr       *bufio.Writer
-	executor pgwire.Executor
 	readBuf  pgwire.ReadBuffer
 	writeBuf *writeBuffer
 	session  pgwire.Session
@@ -146,7 +148,7 @@ type streamingState struct {
 }
 
 func (s *streamingState) reset(
-	formatCodes []pgwire.FormatCode, sendDescription bool, limit int,
+	formatCodes []pgwire.FormatCode, sendDescription bool,
 ) {
 	s.formatCodes = formatCodes
 	s.sendDescription = sendDescription
@@ -156,13 +158,13 @@ func (s *streamingState) reset(
 	s.buf.Reset()
 }
 
-func NewConn(conn net.Conn, executor pgwire.Executor) v3Conn {
+func NewConn(conn net.Conn, sqlConn driver.Conn) v3Conn {
 	return v3Conn{
 		conn:     conn,
+		sqlConn:  sqlConn,
 		rd:       bufio.NewReader(conn),
 		wr:       bufio.NewWriter(conn),
 		writeBuf: newWriteBuffer(),
-		executor: executor,
 	}
 }
 
@@ -209,7 +211,7 @@ func (c *v3Conn) HandleAuthentication(ctx context.Context, session pgwire.Sessio
 	var err error
 	//exists, hashedPassword, err := true, []byte{}, nil
 	exists, _, err := helper.GetUserHashedPassword(
-		ctx, c.executor, session.User(),
+		ctx, nil, session.User(),
 	)
 
 	if err != nil {
@@ -314,7 +316,7 @@ func (c *v3Conn) Serve(ctx context.Context, s pgwire.Session, draining func() bo
 
 		case pgwire.ClientMsgSimpleQuery:
 			c.doingExtendedQueryMessage = false
-			err = c.handleSimpleQuery(&c.readBuf)
+			err = c.handleSimpleQuery(c.session.Ctx(), &c.readBuf)
 
 		case pgwire.ClientMsgTerminate:
 			return nil
@@ -385,22 +387,75 @@ func (c *v3Conn) sendAuthPasswordRequest() (string, error) {
 	return c.readBuf.GetString()
 }
 
-func (c *v3Conn) handleSimpleQuery(buf *pgwire.ReadBuffer) error {
+func (c *v3Conn) handleSimpleQuery(ctx context.Context, buf *pgwire.ReadBuffer) error {
 	query, err := buf.GetString()
 	if err != nil {
 		return err
 	}
 
-	c.streamingState.reset(
-		nil /* formatCodes */, true /* sendDescription */, 0, /* limit */
-	)
+	c.streamingState.reset(nil, true)
+	stmt, err := c.sqlConn.Prepare(query)
+	if err != nil {
+		return err
+	}
 
-	if err := c.executor.ExecuteStatements(c.session, c, query); err != nil {
+	selectStmt, ok := stmt.(driver.StmtQueryContext)
+	if !ok {
+		return errors.New("interface driver.StmtQueryContext not implemented")
+	}
+
+	if err := c.doQueryContext(ctx, selectStmt); err != nil {
 		if err := c.setError(err); err != nil {
 			return err
 		}
 	}
+
 	return c.done()
+}
+
+func (c *v3Conn) doQueryContext(ctx context.Context, q driver.StmtQueryContext) error {
+	rows, err := q.QueryContext(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	sqlRows, ok := rows.(sql.Rows)
+	if !ok {
+		return errors.New("sql.Rows not implemented for the given driver")
+	}
+
+	group := c.NewResultsGroup()
+	defer group.Close()
+
+	sr := group.NewStatementResult()
+
+	// TODO(mcuadros): hardcoded to work only with SELECT queries.
+	sr.BeginResult(pgwire.Rows, pgwire.SELECT)
+	sr.SetColumns(sqlRows.Schema())
+
+	schema := sqlRows.Schema()
+	numcol := len(schema)
+	values := make([]driver.Value, numcol)
+	datums := make([]pgwire.Datum, numcol)
+	for {
+		if err := rows.Next(values); err != nil {
+			if err == io.EOF {
+				break
+			}
+
+			return err
+		}
+
+		for i := 0; i < numcol; i++ {
+			datums[i] = pgwire.NewDatum(schema[i].Type, values[i])
+		}
+
+		if err := sr.AddRow(ctx, datums); err != nil {
+			return err
+		}
+	}
+
+	return sr.CloseResult()
 }
 
 func (c *v3Conn) handleParse(buf *pgwire.ReadBuffer) error {
@@ -424,7 +479,6 @@ func (c *v3Conn) handleExecute(buf *pgwire.ReadBuffer) error {
 }
 
 func (c *v3Conn) SendError(err error) error {
-	c.executor.RecordError(err)
 	if c.doingExtendedQueryMessage {
 		c.ignoreTillSync = true
 	}

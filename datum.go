@@ -23,8 +23,6 @@ import (
 	"time"
 	"unsafe"
 
-	"gopkg.in/sqle/sqle.v0/sql"
-
 	"github.com/cockroachdb/apd"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
@@ -33,6 +31,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"golang.org/x/text/collate"
 	"golang.org/x/text/language"
+	"gopkg.in/sqle/sqle.v0/sql"
 )
 
 var (
@@ -64,17 +63,33 @@ type Datum interface {
 	Format(*bytes.Buffer)
 }
 
-// Datums is a slice of Datum values.
-type Datums []Datum
-
-// Len returns the number of Datum values.
-func (d Datums) Len() int { return len(d) }
-
-// Reverse reverses the order of the Datum values.
-func (d Datums) Reverse() {
-	for i, j := 0, d.Len()-1; i < j; i, j = i+1, j-1 {
-		d[i], d[j] = d[j], d[i]
+func NewDatum(t sql.Type, value interface{}) Datum {
+	switch t {
+	case sql.Null:
+		return DNull
+	case sql.Boolean:
+		return NewDBool(value.(bool))
+	case sql.String:
+		return NewDString(value.(string))
+	case sql.BigInteger, sql.Integer:
+		return NewDInt(value.(int64))
+	case sql.Timestamp:
+		return NewDTimestamp(value.(time.Time), time.Second)
+	case sql.TimestampWithTimezone:
+		return NewDTimestampTZ(value.(time.Time), time.Second)
+	default:
+		panic(fmt.Errorf("unexpected sql.Type: %T", t))
 	}
+	//sql.Boolean:               {unsafe.Sizeof(DBool(false)), fixedSize},
+	//sql.Float:                 {unsafe.Sizeof(DFloat(0.0)), fixedSize},
+	//sql.Decimal:               {unsafe.Sizeof(DDecimal{}), variableSize},
+	//sql.String:                {unsafe.Sizeof(DString("")), variableSize},
+	//sql.Blob:                  {unsafe.Sizeof(DBytes("")), variableSize},
+	//sql.Date:                  {unsafe.Sizeof(DDate(0)), fixedSize},
+	//sql.Time:                  {unsafe.Sizeof(DTime(0)), fixedSize},
+	//sql.Timestamp:             {unsafe.Sizeof(DTimestamp{}), fixedSize},
+	//sql.TimestampWithTimezone: {unsafe.Sizeof(DTimestampTZ{}), fixedSize},
+	//sql.Interval:              {unsafe.Sizeof(DInterval{}), fixedSize},
 }
 
 // DBool is the boolean Datum.
@@ -407,15 +422,15 @@ type DTimestampTZ struct {
 	time.Time
 }
 
-// MakeDTimestampTZ creates a DTimestampTZ with specified precision.
-func MakeDTimestampTZ(t time.Time, precision time.Duration) *DTimestampTZ {
+// NewDTimestampTZ creates a DTimestampTZ with specified precision.
+func NewDTimestampTZ(t time.Time, precision time.Duration) *DTimestampTZ {
 	return &DTimestampTZ{Time: t.Round(precision)}
 }
 
-// MakeDTimestampTZFromDate creates a DTimestampTZ from a DDate.
-func MakeDTimestampTZFromDate(loc *time.Location, d *DDate) *DTimestampTZ {
+// NewDTimestampTZFromDate creates a DTimestampTZ from a DDate.
+func NewDTimestampTZFromDate(loc *time.Location, d *DDate) *DTimestampTZ {
 	year, month, day := timeutil.Unix(int64(*d)*SecondsInDay, 0).Date()
-	return MakeDTimestampTZ(time.Date(year, month, day, 0, 0, 0, 0, loc), time.Microsecond)
+	return NewDTimestampTZ(time.Date(year, month, day, 0, 0, 0, 0, loc), time.Microsecond)
 }
 
 // ResolvedType implements the TypedExpr interface.
@@ -549,6 +564,7 @@ var baseDatumTypeSizes = map[sql.Type]struct {
 	sql.Null:                  {unsafe.Sizeof(dNull{}), fixedSize},
 	sql.Boolean:               {unsafe.Sizeof(DBool(false)), fixedSize},
 	sql.Integer:               {unsafe.Sizeof(DInt(0)), fixedSize},
+	sql.BigInteger:            {unsafe.Sizeof(DInt(0)), fixedSize},
 	sql.Float:                 {unsafe.Sizeof(DFloat(0.0)), fixedSize},
 	sql.Decimal:               {unsafe.Sizeof(DDecimal{}), variableSize},
 	sql.String:                {unsafe.Sizeof(DString("")), variableSize},

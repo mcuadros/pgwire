@@ -1,101 +1,37 @@
 package main
 
 import (
-	"fmt"
-	"io/ioutil"
 	"time"
 
+	"gopkg.in/sqle/sqle.v0"
+	"gopkg.in/sqle/sqle.v0/mem"
 	"gopkg.in/sqle/sqle.v0/sql"
-	"gopkg.in/sqle/vitess-go.v2/vt/sqlparser"
 
-	"github.com/mcuadros/pgwire"
 	"github.com/mcuadros/pgwire/server"
 )
 
 func main() {
+	e := sqle.New()
+	e.AddDatabase(createTestDatabase())
+
 	cfg := server.NewConfig()
 	cfg.Insecure = true
 
-	s := server.New(cfg, NewExecutor())
+	s := server.New(cfg, e)
 	s.Start()
 }
 
-func NewExecutor() pgwire.Executor {
-	return &executor{}
-}
-
-type executor struct{}
-
-func (e *executor) ExecuteStatements(s pgwire.Session, rw pgwire.ResultsWriter, stmts string) error {
-	stmt, err := sqlparser.Parse(stmts)
-	if err != nil {
-		return err
-	}
-
-	sel, ok := stmt.(*sqlparser.Select)
-	if !ok {
-		return fmt.Errorf("only SELECT operations are supported.")
-	}
-
-	group := rw.NewResultsGroup()
-
-	defer group.Close()
-	sr := group.NewStatementResult()
-	sr.BeginResult(pgwire.Rows, pgwire.SELECT)
-	sr.SetColumns(sql.Schema{
-		{Name: "filename", Type: sql.String},
-		{Name: "mode", Type: sql.String},
-		{Name: "size", Type: sql.Integer},
-		{Name: "mod_time", Type: sql.Timestamp},
-		{Name: "is_dir", Type: sql.Boolean},
+func createTestDatabase() *mem.Database {
+	db := mem.NewDatabase("test")
+	table := mem.NewTable("mytable", sql.Schema{
+		{Name: "name", Type: sql.String},
+		{Name: "email", Type: sql.String},
+		{Name: "created_at", Type: sql.TimestampWithTimezone},
 	})
-
-	for _, path := range getTableNames(sel) {
-		if err := readDirectory(s, sr, path); err != nil {
-			return err
-		}
-	}
-
-	sr.CloseResult()
-	group.Close()
-
-	return nil
-}
-
-func readDirectory(s pgwire.Session, sr pgwire.StatementResult, path string) error {
-	files, err := ioutil.ReadDir(path)
-	if err != nil {
-		return err
-	}
-
-	for _, file := range files {
-		sr.AddRow(s.Ctx(), []pgwire.Datum{
-			pgwire.NewDString(file.Name()),
-			pgwire.NewDString(file.Mode().String()),
-			pgwire.NewDInt(file.Size()),
-			pgwire.NewDTimestamp(file.ModTime(), time.Second),
-			pgwire.NewDBool(file.IsDir()),
-		})
-	}
-
-	return nil
-}
-
-func (e *executor) RecordError(err error) {
-	return
-}
-
-func getTableNames(s *sqlparser.Select) []string {
-	var names []string
-
-	for _, table := range s.From {
-		alias, ok := table.(*sqlparser.AliasedTableExpr)
-		if !ok {
-			continue
-		}
-
-		names = append(names, sqlparser.GetTableName(alias.Expr).String())
-	}
-
-	return names
+	db.AddTable("mytable", table)
+	table.Insert(sql.NewRow("John Doe", "john@doe.com", time.Now()))
+	table.Insert(sql.NewRow("John Doe", "johnalt@doe.com", time.Now()))
+	table.Insert(sql.NewRow("Jane Doe", "jane@doe.com", time.Now()))
+	table.Insert(sql.NewRow("Evil Bob", "evilbob@gmail.com", time.Now()))
+	return db
 }

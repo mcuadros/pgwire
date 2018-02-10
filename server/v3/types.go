@@ -23,16 +23,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mcuadros/pgwire"
-	"gopkg.in/sqle/sqle.v0/sql"
-
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-
 	"github.com/lib/pq/oid"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/sqle/sqle.v0/sql"
+
+	"github.com/mcuadros/pgwire"
 )
 
 // pgType contains type metadata used in RowDescription messages.

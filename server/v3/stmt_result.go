@@ -46,7 +46,7 @@ func (r *statementResult) SetColumns(columns sql.Schema) {
 	r.state.columns = columns
 }
 
-func (r *statementResult) AddRow(ctx context.Context, row pgwire.Datums) error {
+func (r *statementResult) AddRow(ctx context.Context, row []pgwire.Datum) error {
 	if r.state.err != nil {
 		return r.state.err
 	}

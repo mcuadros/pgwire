@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"database/sql/driver"
 	"net"
 	"sync"
 	"time"
@@ -59,8 +60,8 @@ type cancelChanMap map[chan struct{}]context.CancelFunc
 
 // Server implements the server side of the PostgreSQL wire protocol.
 type Server struct {
-	cfg      *Config
-	executor pgwire.Executor
+	cfg *Config
+	d   driver.Driver
 
 	l net.Listener
 
@@ -75,12 +76,8 @@ type Server struct {
 	}
 }
 
-func New(cfg *Config, e pgwire.Executor) *Server {
-	s := &Server{
-		cfg:      cfg,
-		executor: e,
-	}
-
+func New(cfg *Config, d driver.Driver) *Server {
+	s := &Server{cfg: cfg, d: d}
 	s.mu.Lock()
 	s.mu.connCancelMap = make(cancelChanMap)
 	s.mu.Unlock()
@@ -299,10 +296,12 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 	}
 
 	if version == version30 {
+		sqlConn, _ := s.d.Open("")
+
 		// We make a connection before anything. If there is an error
 		// parsing the connection arguments, the connection will only be
 		// used to send a report of that error.
-		v3conn := v3.NewConn(conn, s.executor)
+		v3conn := v3.NewConn(conn, sqlConn)
 		defer v3conn.Finish(ctx)
 
 		args, err := ParseOptions(ctx, buf.Msg)

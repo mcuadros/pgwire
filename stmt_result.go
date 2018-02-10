@@ -22,7 +22,7 @@ type StatementResult interface {
 	// StatementType is tree.Rows.
 	SetColumns(columns sql.Schema)
 	// AddRow takes the passed in row and adds it to the current result.
-	AddRow(ctx context.Context, row Datums) error
+	AddRow(ctx context.Context, row []Datum) error
 	// IncrementRowsAffected increments a counter by n. This is used for all
 	// result types other than tree.Rows.
 	IncrementRowsAffected(n int)
